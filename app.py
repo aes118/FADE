@@ -15,24 +15,38 @@ import hashlib
 st.set_page_config(page_title="Falcon Awards Application Portal", layout="wide")
 
 # ---------------- Logo (top-right PNG, simple) ----------------
-def add_logo(path="glide_logo.png", width_px=140):
+def add_logo(path="glide_logo.png", width_px=140, position="right"):
+    """
+    Renders the logo in a fixed, safe spot. position: 'right' | 'left'
+    """
     if not os.path.exists(path):
         return
     with open(path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
+
+    horiz = "right: 18px;" if position == "right" else "left: 18px;"
     st.markdown(
         f"""
-        <div style="
-            position: fixed;
-            top: 40px; right: 900px;
-            width: {width_px}px; z-index: 1000;">
-            <img src="data:image/png;base64,{b64}" style="width:100%;height:auto;" alt="GLIDE Logo">
-        </div>
+        <style>
+        .app-global-logo {{
+          position: fixed;
+          top: 12px;
+          {horiz}
+          width: {width_px}px;
+          z-index: 9999;
+          pointer-events: none; /* don’t block clicks */
+        }}
+        @media (max-width: 480px) {{
+          .app-global-logo {{ top: 8px; {horiz} width: {int(width_px*0.75)}px; }}
+        }}
+        </style>
+        <img class="app-global-logo" src="data:image/png;base64,{b64}" alt="Logo">
         """,
         unsafe_allow_html=True,
     )
 
-add_logo()
+
+add_logo("glide_logo.png", width_px=140, position="right")
 
 # ---------------- Helpers & State ----------------
 def generate_id():
@@ -1320,6 +1334,15 @@ def view_activity(a: dict, act_label: str, id_to_output: dict, id_to_kpi: dict) 
 
     # Use your generic card wrapper (orange indicators style)
     return view_logframe_element(title_html + body, kind="activity")
+
+def make_ext_id(kind: str, text: str) -> str:
+    """
+    Deterministic short id for external linking across exports/imports.
+    kind: 'output' | 'kpi'
+    text: any stable text (e.g., output name; for KPI: 'OutputName|KPI text')
+    """
+    base = f"{kind}:{(text or '').strip().lower()}"
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()[:10]
 
 # --- Inline preview with Edit / Delete buttons (refactored, card layout) ---
 with tabs[2]:
