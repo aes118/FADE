@@ -14,41 +14,100 @@ import hashlib
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Falcon Awards Application Portal", layout="wide")
 
+# ---------------- Helpers & State ----------------
 # ---------------- Logo (top-right PNG, simple) ----------------
-def add_logo(path="glide_logo.png", width_px=140, position="right"):
+def mount_logo_fixed(
+    path: str = "glide_logo.png",
+    *,
+    corner: str = "top-right",     # 'top-right' | 'top-left'
+    width_px: int = 140,
+    width_px_mobile: int = 110,
+    offset_top_px: int = 12,
+    offset_side_px: int = 12,
+    link_url: str | None = None,
+    opacity: float = 1.0,
+    hide_on_small: bool = False,
+    debug_outline: bool = False,
+):
     """
-    Renders the logo in a fixed, safe spot. position: 'right' | 'left'
+    Mount a fixed-position logo and keep it visible across reruns.
+    We render into a persistent st.empty() container each run.
     """
+    import base64, os
+
     if not os.path.exists(path):
         return
+
     with open(path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
 
-    horiz = "right: 18px;" if position == "right" else "left: 18px;"
-    st.markdown(
-        f"""
+    # Choose side based on corner
+    if corner == "top-left":
+        side_rule = (
+            f"left: max({offset_side_px}px, env(safe-area-inset-left) + {offset_side_px}px); right: auto;"
+        )
+    else:
+        side_rule = (
+            f"right: max({offset_side_px}px, env(safe-area-inset-right) + {offset_side_px}px); left: auto;"
+        )
+
+    outline = "outline: 1px dashed #e74c3c;" if debug_outline else "outline: none;"
+    display_small = "display:none;" if hide_on_small else "display:block;"
+
+    clickable = bool(link_url)
+    pointer = "auto" if clickable else "none"
+    wrapper_start = (
+        f'<a id="fixed-global-logo" href="{link_url}" target="_blank" rel="noopener noreferrer">'
+        if clickable
+        else '<span id="fixed-global-logo">'
+    )
+    wrapper_end = "</a>" if clickable else "</span>"
+
+    html = f"""
         <style>
-        .app-global-logo {{
-          position: fixed;
-          top: 12px;
-          {horiz}
-          width: {width_px}px;
-          z-index: 9999;
-          pointer-events: none; /* don’t block clicks */
+        /* Ensure we always overwrite the same node on rerun */
+        #fixed-global-logo {{
+            position: fixed;
+            top: max({offset_top_px}px, env(safe-area-inset-top) + {offset_top_px}px);
+            {side_rule}
+            width: {width_px}px;
+            z-index: 2147483647;            /* above Streamlit header */
+            pointer-events: {pointer};
+            filter: drop-shadow(0 1px 2px rgba(0,0,0,.15));
+            opacity: {opacity};
+            {outline}
+            {display_small}
         }}
         @media (max-width: 480px) {{
-          .app-global-logo {{ top: 8px; {horiz} width: {int(width_px*0.75)}px; }}
+            #fixed-global-logo {{
+                width: {width_px_mobile}px;
+                top: max({max(8, offset_top_px//2)}px, env(safe-area-inset-top) + {max(8, offset_top_px//2)}px);
+            }}
         }}
         </style>
-        <img class="app-global-logo" src="data:image/png;base64,{b64}" alt="Logo">
-        """,
-        unsafe_allow_html=True,
-    )
+        {wrapper_start}
+            <img src="data:image/png;base64,{b64}" alt="Logo" style="width:100%;height:auto;"/>
+        {wrapper_end}
+    """
 
+    # Persistent placeholder — gets updated every rerun
+    if "_logo_placeholder" not in st.session_state:
+        st.session_state["_logo_placeholder"] = st.empty()
+    st.session_state["_logo_placeholder"].markdown(html, unsafe_allow_html=True)
 
-add_logo("glide_logo.png", width_px=140, position="right")
+mount_logo_fixed(
+    "glide_logo.png",
+    corner="top-right",
+    width_px=140,
+    width_px_mobile=110,
+    offset_top_px=18,      # tweak as needed
+    offset_side_px=18,
+    link_url=None,
+    opacity=1.0,
+    hide_on_small=False,
+    debug_outline=False
+)
 
-# ---------------- Helpers & State ----------------
 def generate_id():
     return str(uuid.uuid4())[:8]
 
