@@ -1,0 +1,22 @@
+## Everyday update (PyCharm)
+1. Make your edits in `app.py`.
+2. Run locally (optional): `streamlit run app.py`.
+3. **Commit**: press **Ctrl+K** → write a message → **Commit**.
+4. **Push**: press **Ctrl+Shift+K** → **Push**.
+5. Streamlit Cloud redeploys from `main` automatically.
+
+## Everyday update (Terminal, same result)
+```powershell
+# from the project root
+git pull --rebase        # grabs any remote changes first (safe habit)
+git add -A
+git commit -m "Describe the change"
+git push                 # goes to origin/main (already tracked)
+```
+
+## If you add a new Python package
+1. `pip install <package>` in your venv.
+2. Add it to **requirements.txt** (one per line).
+3. Commit & push (Streamlit will reinstall deps on deploy).
+
+That’s it. Day-to-day it’s just: **edit → commit → push**.
