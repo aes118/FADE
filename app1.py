@@ -332,70 +332,10 @@ def build_logframe_docx():
     if outcome_text:
         _add_banner_block("OUTCOME", outcome_text)
 
-    # ==== [NEW] Outcome-level KPI table (separate) ====
-    outcome_kpis = [k for k in st.session_state.get("kpis", []) if k.get("parent_level") == "Outcome"]
-
-    if outcome_kpis:
-        k = outcome_kpis[0]  # only one allowed
-
-        tbl_outcome = doc.add_table(rows=1, cols=4)
-        tbl_outcome.style = "Table Grid"
-        tbl_outcome.alignment = WD_TABLE_ALIGNMENT.LEFT
-        tbl_outcome.autofit = False
-
-        # same headers as the main table to keep visual consistency
-        hdr = tbl_outcome.rows[0]
-        labels = ("Outcome", "KPI", "Means of Verification", "Key Assumptions")
-        for i, lab in enumerate(labels):
-            _set_cell_text(hdr.cells[i], lab, bold=True, white=True)
-            _shade(hdr.cells[i], PRIMARY_SHADE)
-        _repeat_header(hdr)
-
-        # set stable column widths so Word won't squash them
-        from docx.shared import Cm
-        col_widths = (Cm(6.0), Cm(9.0), Cm(6.0), Cm(6.0))
-        for i, w in enumerate(col_widths):
-            for r in tbl_outcome.rows:
-                r.cells[i].width = w
-            tbl_outcome.columns[i].width = w
-
-        r = tbl_outcome.add_row()
-        for i, w in enumerate(col_widths):
-            r.cells[i].width = w
-
-        # Col 0: Outcome text
-        _set_cell_text(r.cells[0], outcome_text or "")
-
-        # Col 1: KPI details (same style as other KPIs)
-        kcell = r.cells[1]; kcell.text = ""
-        p = kcell.paragraphs[0]
-        _add_run(p, f"Outcome KPI — {k.get('name','')}")
-        p.add_run("\n")
-        bp = (k.get("baseline","") or "").strip()
-        if bp: _add_run(p, "Baseline: ", True); _add_run(p, bp); p.add_run("\n")
-        tg = (k.get("target","") or "").strip()
-        if tg: _add_run(p, "Target: ", True); _add_run(p, tg); p.add_run("\n")
-        sd = fmt_dd_mmm_yyyy(k.get("start_date")); ed = fmt_dd_mmm_yyyy(k.get("end_date"))
-        if sd or ed:
-            _add_run(p, "Start: ", True); _add_run(p, sd or "—"); p.add_run("\n")
-            _add_run(p, "End: ", True); _add_run(p, ed or "—")
-
-        # Col 2: MoV
-        _set_cell_text(r.cells[2], (k.get("mov") or "").strip() or "—")
-
-        # Col 3: Assumptions at outcome level (leave blank or em dash)
-        _set_cell_text(r.cells[3], "—")
-
-        # a little whitespace before the next table
-        doc.add_paragraph("")
-
-    # ==== [UNCHANGED LOGIC, but in its own table] Main Outputs + KPIs table ====
+    # ---- ONE main table for all Outputs & KPIs (no per-output banners)
     tbl = doc.add_table(rows=1, cols=4)
     tbl.style = "Table Grid"
     tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
-    tbl.autofit = False
-
-    # match your main table header exactly
     hdr = tbl.rows[0]
     labels = ("Output", "KPI", "Means of Verification", "Key Assumptions")
     for i, lab in enumerate(labels):
@@ -403,62 +343,67 @@ def build_logframe_docx():
         _shade(hdr.cells[i], PRIMARY_SHADE)
     _repeat_header(hdr)
 
-    # set widths for the main table too (tweak if you prefer your prior numbers)
-    col_widths_main = (Cm(6.0), Cm(9.0), Cm(6.0), Cm(6.0))
-    for i, w in enumerate(col_widths_main):
-        for r in tbl.rows:
-            r.cells[i].width = w
-        tbl.columns[i].width = w
-
-    # --- your existing Outputs & KPIs loop (unchanged) ---
     outputs = st.session_state.get("outputs", [])
-    out_nums, kpi_nums = compute_numbers()
-
-    def _sort_by_num(label):
-        if not label: return (9999,)
-        try: return tuple(int(x) for x in str(label).split("."))
-        except: return (9999,)
-
     outputs = sorted(outputs, key=lambda o: _sort_by_num(out_nums.get(o["id"], "")))
 
     for out in outputs:
         out_num = out_nums.get(out["id"], "")
-        # exclude outcome-level KPIs from this table
-        kpis = [k for k in st.session_state.get("kpis", [])
-                if k.get("parent_id") == out["id"] and k.get("parent_level") != "Outcome"]
+        kpis = [k for k in st.session_state.get("kpis", []) if k.get("parent_id") == out["id"]]
 
         if not kpis:
             r = tbl.add_row()
-            for i, w in enumerate(col_widths_main): r.cells[i].width = w
             _set_cell_text(r.cells[0], f"Output {out_num} — {out.get('name','')}")
             _set_cell_text(r.cells[1], "—")
             _set_cell_text(r.cells[2], "—")
             _set_cell_text(r.cells[3], out.get("assumptions","") or "—")
             continue
 
-        first = len(tbl.rows)
+        first = len(tbl.rows)  # first KPI row index for this output in the main table
         for k in kpis:
             r = tbl.add_row()
-            for i, w in enumerate(col_widths_main): r.cells[i].width = w
-
-            kcell = r.cells[1]; kcell.text = ""
-            p = kcell.paragraphs[0]
             k_lab = kpi_nums.get(k["id"], "")
-            _add_run(p, f"KPI ({k_lab}) — {k.get('name','')}")
+            bp = (k.get("baseline", "") or "").strip()
+            tg = (k.get("target", "") or "").strip()
+            sd = fmt_dd_mmm_yyyy(k.get("start_date"))
+            ed = fmt_dd_mmm_yyyy(k.get("end_date"))
+
+            # Reset KPI cell
+            kcell = r.cells[1]
+            kcell.text = ""
+            p = kcell.paragraphs[0]
+
+            # Title line
+            # Title
+            title = f"KPI ({k_lab}) — {k.get('name', '')}" if k_lab else k.get('name', '')
+            _add_run(p, title);
             p.add_run("\n")
 
-            bp = (k.get("baseline","") or "").strip()
-            if bp: _add_run(p, "Baseline: ", True); _add_run(p, bp); p.add_run("\n")
-            tg = (k.get("target","") or "").strip()
-            if tg: _add_run(p, "Target: ", True); _add_run(p, tg); p.add_run("\n")
-            sd = fmt_dd_mmm_yyyy(k.get("start_date")); ed = fmt_dd_mmm_yyyy(k.get("end_date"))
-            if sd or ed:
-                _add_run(p, "Start: ", True); _add_run(p, sd or "—"); p.add_run("\n")
-                _add_run(p, "End: ", True); _add_run(p, ed or "—")
+            # Baseline
+            if bp:
+                _add_run(p, "Baseline: ", bold=True);
+                _add_run(p, bp);
+                p.add_run("\n")
 
-            _set_cell_text(r.cells[2], (k.get("mov") or "").strip() or "—")
+            # Target
+            if tg:
+                _add_run(p, "Target: ", bold=True);
+                _add_run(p, tg);
+                p.add_run("\n")
+
+            # Start / End (separate lines)
+            if sd or ed:
+                _add_run(p, "Start: ", bold=True);
+                _add_run(p, sd or "—");
+                p.add_run("\n")
+                _add_run(p, "End: ", bold=True);
+                _add_run(p, ed or "—")
+
+            # MoV column (third col)
+            mov_text = (k.get("mov") or "").strip() or "—"
+            _set_cell_text(r.cells[2], mov_text)
 
         last = len(tbl.rows) - 1
+        # Merge Output & Assumptions cells across the KPI block
         _set_cell_text(tbl.cell(first, 0), f"Output {out_num} — {out.get('name','')}")
         _set_cell_text(tbl.cell(first, 3), out.get("assumptions","") or "—")
         if last > first:
@@ -705,22 +650,10 @@ tabs[0].markdown(
 
 Please complete each section of your application:
 
-1. **Identification** – Fill project & contacts.
-2. **Logframe** – Add **Goal**, **Outcome**, **Outputs**, then **KPIs**.
-3. **Workplan** – Add **Activities** linked to Outputs/KPIs with dates.
-4. **Budget** – Add **Budget lines** linked to Outputs.
-5. **Export** – Use **Generate Work Document** to produce a .docx that includes the logframe, workplan (table & Gantt) and budget.
-
-### Definitions (quick)
-- **Goal**: The long-term vision (impact).
-- **Outcome**: The specific change expected from the project.
-- **Output**: Tangible products/services delivered by the project.
-- **KPI**: Quantifiable metric to judge performance (with baseline, target, dates, MoV).
-- **Activity**: Tasks that produce Outputs (scheduled in the **Workplan**).
-- **Assumptions**: External conditions necessary for success.
-- **Means of Verification (MoV)**: Where/how the KPI will be measured.
-- **Payment-linked indicator**: KPI that triggers financing when achieved (optional).
-- **Budget line**: A costed item (category, unit, quantity, unit cost).
+1. **Identification** - Basic project and investigator information, including title, PI details, institution, dates, and contact info
+2. **Logframe** – Your project goals, results, and indicators  
+3. **Workplan** – Planned activities and timelines  
+4. **Budget** – Detailed costing for each activity
 
 Once done, export your application as an Excel file.
 
@@ -812,7 +745,7 @@ if uploaded_file is not None:
                 elif single_outcome_id:
                     out["parent_id"] = single_outcome_id
 
-            # ---- KPI Matrix (supports Outcome & Output parents) ----
+            # ---- KPI Matrix (preferred in hybrid model)
             if "KPI Matrix" in xls.sheet_names:
                 kdf = pd.read_excel(xls, sheet_name="KPI Matrix")
 
@@ -827,37 +760,24 @@ if uploaded_file is not None:
                     return str(v).strip()
 
 
-                # lookup maps by name
+                # Build quick lookup maps by name
                 outputs_by_name = {(o.get("name") or "").strip(): o["id"] for o in st.session_state.outputs}
-                outcomes_by_name = {(o.get("name") or "").strip(): o["id"] for o in st.session_state.outcomes}
-
-                # normalize headers
-                kdf.columns = [str(c).strip() for c in kdf.columns]
-
-                # best-effort header detection
-                col_parent_level = next((c for c in kdf.columns if c.lower() in ("parent level", "parent_level")), None)
-                col_parent_label = next(
-                    (c for c in kdf.columns if c.lower() in ("parent (label)", "parent label", "parent")), None)
 
                 for _, row in kdf.iterrows():
-                    plevel = _clean(row.get(col_parent_level, "Output")) if col_parent_level else "Output"
-                    parent_label = _clean(row.get(col_parent_label, ""))
+                    parent_label = _clean(row.get("Parent (label)", ""))  # e.g., "Output 1 — Title"
 
-                    # infer parent id by level
-                    parent_id = None
-                    if plevel.lower() == "outcome":
-                        # parent label like "Outcome — NAME"
-                        tail = parent_label.split("—", 1)[1].strip() if "—" in parent_label else parent_label
-                        parent_id = outcomes_by_name.get(tail) or (
-                            st.session_state.outcomes[0]["id"] if st.session_state.outcomes else None)
-                    else:
-                        # Output level: parent label like "Output 1 — NAME"
-                        tail = parent_label.split("—", 1)[1].strip() if "—" in parent_label else parent_label
-                        parent_id = outputs_by_name.get(tail) or outputs_by_name.get(parent_label)
+                    # Always Output in hybrid:
+                    plevel = "Output"
+                    tail = parent_label.split("—", 1)[1].strip() if "—" in parent_label else parent_label
+                    parent_id = outputs_by_name.get(tail)
+                    if not parent_id:  # fallback: try full label, then plain
+                        parent_id = outputs_by_name.get(parent_label) or outputs_by_name.get(tail)
 
-                    # fields
+                    # Pull KPI fields
                     kpi_raw = _clean(row.get("KPI", ""))
-                    kpi_text = re.sub(r'^\s*KPI\s+[\w\.\-]*\s*[—:\-]\s*', '', kpi_raw).strip()
+                    # strip any leading "KPI x.y — "
+                    kpi_text = re.sub(r'^\s*KPI\s+[\w\.\-]+\s*[—:\-]\s*', '', kpi_raw).strip()
+
                     baseline = _clean(row.get("Baseline", ""))
                     target = _clean(row.get("Target", ""))
                     sd = parse_date_like(row.get("Start Date", ""))
@@ -865,13 +785,13 @@ if uploaded_file is not None:
                     linked = _clean(row.get("Linked to Payment", "")).lower() in ("yes", "y", "true", "1")
                     mov = _clean(row.get("Means of Verification", ""))
 
+                    # Only add if we found a parent
                     if parent_id:
                         st.session_state.kpis.append({
                             "id": generate_id(),
                             "level": "KPI",
                             "name": kpi_text,
                             "parent_id": parent_id,
-                            "parent_level": "Outcome" if plevel.lower() == "outcome" else "Output",
                             "baseline": baseline,
                             "target": target,
                             "start_date": sd,
@@ -1213,48 +1133,6 @@ with tabs[2].expander("➕ Add Outcome"):
                     {"id": generate_id(), "level": "Outcome", "name": outcome_text.strip(), "parent_id": linked_goal_id}
                 )
 
-# --- Add ONE Outcome-level KPI ---
-with tabs[2].expander("➕ Add Outcome KPI (one per outcome)"):
-    if not st.session_state.outcomes:
-        tabs[2].warning("Add the Outcome first.")
-    else:
-        outcome = st.session_state.outcomes[0]   # single-outcome design
-        existing_outcome_kpis = [
-            k for k in st.session_state.kpis
-            if k.get("parent_level") == "Outcome" and k.get("parent_id") == outcome["id"]
-        ]
-
-        if existing_outcome_kpis:
-            st.info("This outcome already has a KPI. Edit it below in the preview.")
-        else:
-            with st.form("kpi_outcome_form"):
-                kpi_text = st.text_area("Outcome KPI*")
-                baseline = st.text_input("Baseline")
-                target   = st.text_input("Target")
-                c1, c2 = st.columns(2)
-                with c1:
-                    start_date = st.date_input("Start date")
-                with c2:
-                    end_date   = st.date_input("End date")
-                payment_linked = st.checkbox("Linked to Payment (optional)")
-                mov = st.text_area("Means of Verification")
-
-                if st.form_submit_button("Add Outcome KPI") and kpi_text.strip():
-                    st.session_state.kpis.append({
-                        "id": generate_id(),
-                        "level": "KPI",
-                        "name": strip_label_prefix(kpi_text.strip(), "KPI"),
-                        "parent_id": outcome["id"],
-                        "parent_level": "Outcome",   # <<< key difference
-                        "baseline": baseline.strip(),
-                        "target": target.strip(),
-                        "start_date": start_date,
-                        "end_date": end_date,
-                        "linked_payment": bool(payment_linked),
-                        "mov": mov.strip(),
-                    })
-                    st.rerun()
-
 with tabs[2].expander("➕ Add Output"):
     if not st.session_state.outcomes:
         tabs[2].warning("Add the Outcome first.")
@@ -1356,9 +1234,7 @@ def view_output_header(out):
     return view_logframe_element(header_html, kind="output")
 
 def view_kpi(k):
-    # decide label prefix based on level
-    is_outcome = (k.get("parent_level") == "Outcome")
-    num  = kpi_nums.get(k["id"], "?") if not is_outcome else ""  # no numbering for outcome-level
+    num  = kpi_nums.get(k["id"], "?")
     name = k.get("name", "")
 
     bp  = (k.get("baseline") or "").strip()
@@ -1374,24 +1250,26 @@ def view_kpi(k):
     )
 
     # Title
-    if is_outcome:
-        header = f"<div class='lf-kpi-title'>Outcome KPI: {name}</div>"
-    else:
-        header = f"<div class='lf-kpi-title'>KPI {num}: {name}</div>"
+    header = f"<div class='lf-kpi-title'>KPI {num}: {name}</div>"
 
+    # Lines in the exact order you want
     lines = []
     if bp:
         lines.append(f"<div class='lf-line'><b>Baseline:</b> {bp}</div>")
     if tg:
         lines.append(f"<div class='lf-line'><b>Target:</b> {tg}</div>")
-    if (sd != '—') or (ed != '—'):
+    # dates on one line (use em dash if you prefer: &mdash;)
+    if (sd != "—") or (ed != "—"):
         lines.append(
-            f"<div class='lf-line'><b>Start date:</b> {sd} &nbsp;&nbsp;•&nbsp;&nbsp; <b>End date:</b> {ed}</div>"
+            f"<div class='lf-line'><b>Start date:</b> {sd} &nbsp;&nbsp;•&nbsp;&nbsp; "
+            f"<b>End date:</b> {ed}</div>"
         )
     if mov:
         lines.append(f"<div class='lf-line'><b>Means of Verification:</b> {mov}</div>")
 
+    # chip gets its own line, independent from dates
     lines.append(f"<div class='lf-line'>{chip}</div>")
+
     inner = header + "".join(lines)
     return view_logframe_element(inner, kind="kpi")
 
@@ -1473,36 +1351,6 @@ with tabs[2]:
                 on_delete=lambda _id=oc["id"]: (delete_cascade(outcome_id=_id), st.rerun()),
                 key_prefix="lf"
             )
-
-            # --- Outcome-level KPI preview (edit/delete same as output KPI) ---
-            outcome_kpis = [k for k in st.session_state.get("kpis", [])
-                            if k.get("parent_id") == oc["id"] and k.get("parent_level") == "Outcome"]
-
-            for k in outcome_kpis:
-                render_editable_item(
-                    item=k, list_name="kpis", edit_flag_key="edit_kpi",
-                    view_md_func=lambda kk: view_kpi(kk),  # reuse the same renderer
-                    fields=[
-                        ("name", st.text_area, "KPI"),
-                        ("baseline", st.text_input, "Baseline"),
-                        ("target", st.text_input, "Target"),
-                        ("start_date",
-                         lambda label, value, key: st.date_input(label, value=value or date.today(), key=key),
-                         "Start date"),
-                        ("end_date",
-                         lambda label, value, key: st.date_input(label, value=value or date.today(), key=key),
-                         "End date"),
-                        ("linked_payment",
-                         lambda label, value, key: st.checkbox(label, value=bool(value), key=key),
-                         "Linked to Payment"),
-                        ("mov", st.text_area, "Means of Verification"),
-                    ],
-                    on_delete=lambda _id=k["id"]: (
-                        setattr(st.session_state, "kpis", [x for x in st.session_state.kpis if x["id"] != _id]),
-                        st.rerun()
-                    ),
-                    key_prefix="lf"
-                )
 
             outs_here = [o for o in st.session_state.get("outputs", []) if o.get("parent_id") == oc["id"]]
             for out in outs_here:
@@ -1909,25 +1757,14 @@ if tabs[5].button("Generate Excel File"):
 
     out_nums, kpi_nums = compute_numbers()
     output_title = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
-    outcome_name = (st.session_state.outcomes[0]["name"] if st.session_state.outcomes else "")
 
-    for k in st.session_state.kpis:
-        plevel = k.get("parent_level", "Output")
-        if plevel == "Outcome":
-            parent_label = f"Outcome — {outcome_name}"
-        else:
-            pid = k.get("parent_id", "")
-            parent_label = f"Output {out_nums.get(pid, '')} — {output_title.get(pid, '')}"
-
-        # numbering only for output-level KPIs
-        k_label = (f"KPI {kpi_nums.get(k['id'], '')} — {k.get('name', '')}"
-                   if plevel != "Outcome"
-                   else f"KPI — {k.get('name', '')}")
-
+    for k in st.session_state.kpis:  # keep order as-is
+        pid = k.get("parent_id", "")
+        parent_label = f"Output {out_nums.get(pid, '')} — {output_title.get(pid, '')}"
         s2.append([
-            plevel,
+            "Output",
             parent_label,
-            k_label,
+            f"KPI {kpi_nums.get(k['id'], '')} — {k.get('name', '')}",
             k.get("baseline", ""),
             k.get("target", ""),
             fmt_dd_mmm_yyyy(k.get("start_date")),
