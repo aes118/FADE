@@ -17,3 +17,33 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Caches & temp
+.mypy_cache/
+.pytest_cache/
+__pycache__/
+.cache/
+.tmp/
+logs/
+*.log
+
+# Streamlit & app artifacts
+.streamlit/
+.streamlit/cache/
+
+# Data & outputs (adjust names you actually use)
+data/
+datasets/
+outputs/
+reports/
+*.csv
+*.parquet
+*.xlsx
+
+# Packaging/build (if you ever package)
+dist/
+build/
+*.egg-info/
+
+# Node (if any front-end bits creep in)
+node_modules/

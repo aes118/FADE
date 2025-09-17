@@ -14,7 +14,7 @@ import streamlit as st, requests, tempfile, os
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Falcon Awards Application Portal", layout="wide")
-st.sidebar.image("glide_logo.png", use_container_width=True)
+st.sidebar.image("glide_logo.png", width="stretch")
 
 # ---------------- Helpers & State ----------------
 def generate_id():
@@ -329,8 +329,6 @@ def build_logframe_docx():
     # ---- GOAL & OUTCOME banners (keep these)
     if goal_text:
         _add_banner_block("GOAL", goal_text)
-    if outcome_text:
-        _add_banner_block("OUTCOME", outcome_text)
 
     # ==== [NEW] Outcome-level KPI table (separate) ====
     outcome_kpis = [k for k in st.session_state.get("kpis", []) if k.get("parent_level") == "Outcome"]
@@ -341,7 +339,7 @@ def build_logframe_docx():
         tbl_outcome = doc.add_table(rows=1, cols=4)
         tbl_outcome.style = "Table Grid"
         tbl_outcome.alignment = WD_TABLE_ALIGNMENT.LEFT
-        tbl_outcome.autofit = False
+        tbl_outcome.autofit = True
 
         # same headers as the main table to keep visual consistency
         hdr = tbl_outcome.rows[0]
@@ -393,7 +391,7 @@ def build_logframe_docx():
     tbl = doc.add_table(rows=1, cols=4)
     tbl.style = "Table Grid"
     tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
-    tbl.autofit = False
+    tbl.autofit = True
 
     # match your main table header exactly
     hdr = tbl.rows[0]
@@ -711,7 +709,7 @@ Please complete each section of your application:
 4. **Budget** – Add **Budget lines** linked to Outputs.
 5. **Export** – Use **Generate Work Document** to produce a .docx that includes the logframe, workplan (table & Gantt) and budget.
 
-### Definitions (quick)
+### Definitions
 - **Goal**: The long-term vision (impact).
 - **Outcome**: The specific change expected from the project.
 - **Output**: Tangible products/services delivered by the project.
