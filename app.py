@@ -14,9 +14,18 @@ import streamlit as st, requests, tempfile, os
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Falcon Awards Application Portal", layout="wide")
-st.sidebar.image("glide_logo.png", width="stretch")
+st.sidebar.image("glide_logo.png", use_container_width=True)
 
 # ---------------- Helpers & State ----------------
+def _s(v):
+    try:
+        import pandas as pd
+        if pd.isna(v):
+            return ""
+    except Exception:
+        pass
+    return str(v).strip()
+
 def generate_id():
     return str(uuid.uuid4())[:8]
 
@@ -330,7 +339,7 @@ def build_logframe_docx():
     if goal_text:
         _add_banner_block("GOAL", goal_text)
 
-    # ==== [NEW] Outcome-level KPI table (separate) ====
+    # ==== Outcome-level KPI table (separate) ====
     outcome_kpis = [k for k in st.session_state.get("kpis", []) if k.get("parent_level") == "Outcome"]
 
     if outcome_kpis:
@@ -387,7 +396,7 @@ def build_logframe_docx():
         # a little whitespace before the next table
         doc.add_paragraph("")
 
-    # ==== [UNCHANGED LOGIC, but in its own table] Main Outputs + KPIs table ====
+    # ==== Main Outputs + KPIs table ====
     tbl = doc.add_table(rows=1, cols=4)
     tbl.style = "Table Grid"
     tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
@@ -748,152 +757,67 @@ if uploaded_file is not None:
             for _f in ("edit_goal", "edit_outcome", "edit_output", "edit_kpi"):
                 st.session_state[_f] = None
 
-            # ---- Read Summary and build items (without trusting parent ids yet)
+            # ---- Read Summary with explicit IDs ----
             summary_df = pd.read_excel(xls, sheet_name="Summary")
+            summary_df.columns = [str(c).strip() for c in summary_df.columns]
 
-            goals_by_text = {}
-            outcomes_by_text = {}
-            pending_outcome_parent_ref = {}   # temp: outcome_id -> raw parent cell
-            pending_output_parent_ref  = {}   # temp: output_id  -> raw parent cell
-
-            def _clean_str(v):
-                if pd.isna(v):
-                    return ""
-                return str(v).strip()
+            st.session_state.impacts = []
+            st.session_state.outcomes = []
+            st.session_state.outputs = []
 
             for _, row in summary_df.iterrows():
-                lvl    = _clean_str(row.get("Level", ""))
-                text   = _clean_str(row.get("Text / Title", ""))
-                parent = _clean_str(row.get("Parent ID", ""))  # may hold old UUID or a name (older files)
+                lvl = _s(row.get("RowLevel", ""))
+                _id = _s(row.get("ID")) or generate_id()
+                pid = _s(row.get("ParentID")) or None
+                text = _s(row.get("Text / Title"))
+                ass = _s(row.get("Assumptions"))
 
                 if lvl.lower() == "goal":
-                    gid = generate_id()
-                    st.session_state.impacts.append({"id": gid, "level": "Goal", "name": text})
-                    if text:
-                        goals_by_text[text] = gid
+                    st.session_state.impacts.append({"id": _id, "level": "Goal", "name": text})
 
                 elif lvl.lower() == "outcome":
-                    oid = generate_id()
-                    st.session_state.outcomes.append({"id": oid, "level": "Outcome", "name": text, "parent_id": None})
-                    pending_outcome_parent_ref[oid] = parent
-                    if text:
-                        outcomes_by_text[text] = oid
+                    st.session_state.outcomes.append({"id": _id, "level": "Outcome", "name": text, "parent_id": pid})
 
                 elif lvl.lower() == "output":
-                    pid = generate_id()
-                    name_clean = strip_label_prefix(text, "Output") or "Output"
-                    assumptions = _clean_str(row.get("Assumptions", ""))  # <-- read column if present
                     st.session_state.outputs.append({
-                        "id": pid,
+                        "id": _id,
                         "level": "Output",
-                        "name": name_clean,
-                        "parent_id": None,
-                        "assumptions": assumptions,  # <-- store it
+                        "name": strip_label_prefix(text, "Output") or "Output",
+                        "parent_id": pid,
+                        "assumptions": ass
                     })
-                    pending_output_parent_ref[pid] = parent
 
-            # ---- Resolve parents for Outcomes
-            single_goal_id = st.session_state.impacts[0]["id"] if len(st.session_state.impacts) == 1 else None
-            for oc in st.session_state.outcomes:
-                raw = pending_outcome_parent_ref.get(oc["id"], "")
-                if raw in goals_by_text:
-                    oc["parent_id"] = goals_by_text[raw]
-                elif single_goal_id:
-                    oc["parent_id"] = single_goal_id
-
-            # ---- Resolve parents for Outputs
-            single_outcome_id = st.session_state.outcomes[0]["id"] if len(st.session_state.outcomes) == 1 else None
-            for out in st.session_state.outputs:
-                raw = pending_output_parent_ref.get(out["id"], "")
-                if raw in outcomes_by_text:
-                    out["parent_id"] = outcomes_by_text[raw]
-                elif single_outcome_id:
-                    out["parent_id"] = single_outcome_id
-
-            # ---- KPI Matrix (supports Outcome & Output parents) ----
+            # ---- KPI Matrix (ID-based) ----
             if "KPI Matrix" in xls.sheet_names:
                 kdf = pd.read_excel(xls, sheet_name="KPI Matrix")
-
-
-                def _clean(v):
-                    try:
-                        import pandas as pd
-                        if pd.isna(v):
-                            return ""
-                    except Exception:
-                        pass
-                    return str(v).strip()
-
-
-                # lookup maps by name
-                outputs_by_name = {(o.get("name") or "").strip(): o["id"] for o in st.session_state.outputs}
-                outcomes_by_name = {(o.get("name") or "").strip(): o["id"] for o in st.session_state.outcomes}
-
-                # normalize headers
                 kdf.columns = [str(c).strip() for c in kdf.columns]
 
-                # best-effort header detection
-                col_parent_level = next((c for c in kdf.columns if c.lower() in ("parent level", "parent_level")), None)
-                col_parent_label = next(
-                    (c for c in kdf.columns if c.lower() in ("parent (label)", "parent label", "parent")), None)
+                st.session_state.kpis = []  # reset before loading
 
-                for _, row in kdf.iterrows():
-                    plevel = _clean(row.get(col_parent_level, "Output")) if col_parent_level else "Output"
-                    parent_label = _clean(row.get(col_parent_label, ""))
+                for _, r in kdf.iterrows():
+                    kid = _s(r.get("KPIID")) or generate_id()
+                    plev = _s(r.get("Parent Level") or "Output")
+                    pid = _s(r.get("ParentID")) or None
 
-                    # infer parent id by level
-                    parent_id = None
-                    if plevel.lower() == "outcome":
-                        # parent label like "Outcome — NAME"
-                        tail = parent_label.split("—", 1)[1].strip() if "—" in parent_label else parent_label
-                        parent_id = outcomes_by_name.get(tail) or (
-                            st.session_state.outcomes[0]["id"] if st.session_state.outcomes else None)
-                    else:
-                        # Output level: parent label like "Output 1 — NAME"
-                        tail = parent_label.split("—", 1)[1].strip() if "—" in parent_label else parent_label
-                        parent_id = outputs_by_name.get(tail) or outputs_by_name.get(parent_label)
-
-                    # fields
-                    kpi_raw = _clean(row.get("KPI", ""))
-                    kpi_text = re.sub(r'^\s*KPI\s+[\w\.\-]*\s*[—:\-]\s*', '', kpi_raw).strip()
-                    baseline = _clean(row.get("Baseline", ""))
-                    target = _clean(row.get("Target", ""))
-                    sd = parse_date_like(row.get("Start Date", ""))
-                    ed = parse_date_like(row.get("End Date", ""))
-                    linked = _clean(row.get("Linked to Payment", "")).lower() in ("yes", "y", "true", "1")
-                    mov = _clean(row.get("Means of Verification", ""))
-
-                    if parent_id:
-                        st.session_state.kpis.append({
-                            "id": generate_id(),
-                            "level": "KPI",
-                            "name": kpi_text,
-                            "parent_id": parent_id,
-                            "parent_level": "Outcome" if plevel.lower() == "outcome" else "Output",
-                            "baseline": baseline,
-                            "target": target,
-                            "start_date": sd,
-                            "end_date": ed,
-                            "linked_payment": bool(linked),
-                            "mov": mov,
-                        })
+                    st.session_state.kpis.append({
+                        "id": kid,
+                        "level": "KPI",
+                        "name": _s(r.get("KPI")),
+                        "parent_id": pid,
+                        "parent_level": "Outcome" if plev.lower() == "outcome" else "Output",
+                        "baseline": _s(r.get("Baseline")),
+                        "target": _s(r.get("Target")),
+                        "start_date": parse_date_like(r.get("Start Date")),
+                        "end_date": parse_date_like(r.get("End Date")),
+                        "linked_payment": _s(r.get("Linked to Payment")).lower() in ("yes", "y", "true", "1"),
+                        "mov": _s(r.get("Means of Verification")),
+                    })
 
             # ---- Workplan (supports both "rich" and "simple" exports)
             if "Workplan" in xls.sheet_names:
                 wdf = pd.read_excel(xls, sheet_name="Workplan")
                 # normalize headers
                 wdf.columns = [str(c).strip() for c in wdf.columns]
-
-
-                def _s(v):
-                    try:
-                        import pandas as pd
-                        if pd.isna(v):
-                            return ""
-                    except Exception:
-                        pass
-                    return str(v).strip()
-
 
                 def _split_csv(s):
                     return [t.strip() for t in (_s(s).split(",") if _s(s) else []) if t.strip()]
@@ -904,39 +828,48 @@ if uploaded_file is not None:
                 kpi_id_set = set(kpis_by_name.values())
 
                 # detect "rich" vs "simple" format
-                rich = {"Activity ID", "Output", "Activity", "Owner", "Start", "End", "Status", "% complete",
-                        "Linked KPIs", "Milestones", "Notes", "Dependencies"}.issubset(set(wdf.columns))
+                rich = {"Activity ID", "Activity #", "OutputID", "Output", "Activity", "Owner", "Start", "End",
+                        "Status", "% complete", "Linked KPI IDs", "Linked KPIs", "Milestones", "Notes",
+                        "Dependencies"}.issubset(set(wdf.columns))
 
                 st.session_state.workplan = []  # reset before loading
 
                 if rich:
+                    output_ids = {o["id"] for o in st.session_state.outputs}
+                    kpi_ids = {k["id"] for k in st.session_state.kpis}
+
+
+                    def _csv_ids(s):
+                        vals = [t.strip() for t in (_s(s).split(",") if _s(s) else []) if t.strip()]
+                        return vals
+
+
                     for _, row in wdf.iterrows():
                         act_id = _s(row.get("Activity ID")) or generate_id()
-                        out_name = _s(row.get("Output"))
-                        out_id = outputs_by_name.get(out_name)
+                        out_id = _s(row.get("OutputID"))
+                        if not out_id:
+                            out_name = _s(row.get("Output"))
+                            out_id = next((o["id"] for o in st.session_state.outputs if
+                                           (o.get("name") or "").strip() == out_name), None)
 
-                        # map KPI names to ids (export wrote names)
-                        kpi_names = _split_csv(row.get("Linked KPIs"))
-                        kpi_ids = [kpis_by_name.get(n) for n in kpi_names if kpis_by_name.get(n)]
-
-                        # dependencies: prefer IDs if they exist, else leave empty
-                        deps = _split_csv(row.get("Dependencies"))
-                        dep_ids = [d for d in deps if d in kpi_id_set or len(d) >= 6]  # crude but safe; keep as-is
+                        linked_kpi_ids = [kid for kid in _csv_ids(row.get("Linked KPI IDs")) if kid in kpi_ids]
+                        dep_ids = _csv_ids(row.get("Dependencies"))
 
                         st.session_state.workplan.append({
                             "id": act_id,
-                            "output_id": out_id,
+                            "output_id": out_id if out_id in output_ids else None,
                             "name": _s(row.get("Activity")),
                             "owner": _s(row.get("Owner")),
                             "start": parse_date_like(row.get("Start")),
                             "end": parse_date_like(row.get("End")),
                             "status": _s(row.get("Status") or "planned"),
                             "progress": int(float(row.get("% complete") or 0)),
-                            "kpi_ids": kpi_ids,
+                            "kpi_ids": linked_kpi_ids,
                             "milestones": [m.strip() for m in _s(row.get("Milestones")).split("|") if m.strip()],
                             "dependencies": dep_ids,
                             "notes": _s(row.get("Notes")),
                         })
+
                 else:
                     # SIMPLE legacy format: Activity | Owner | Start Date | End Date | Milestone
                     # No Output/KPI info in this shape; if there is exactly one Output, attach to it.
@@ -993,30 +926,6 @@ if uploaded_file is not None:
 
                 if imported:
                     st.session_state.budget = imported
-
-            # --- Enforce single Goal and single Outcome after import ---
-            # Keep the first Goal only
-            if len(st.session_state.impacts) > 1:
-                keep_goal_id = st.session_state.impacts[0]["id"]
-                st.session_state.impacts = [st.session_state.impacts[0]]
-            else:
-                keep_goal_id = st.session_state.impacts[0]["id"] if st.session_state.impacts else None
-
-            # Keep the first Outcome only; reattach all Outputs to it
-            if len(st.session_state.outcomes) > 1:
-                keep_outcome = st.session_state.outcomes[0]
-                keep_outcome_id = keep_outcome["id"]
-                st.session_state.outcomes = [keep_outcome]
-                for o in st.session_state.outputs:
-                    o["parent_id"] = keep_outcome_id   # << this is the line you asked about
-            elif st.session_state.outcomes:
-                keep_outcome_id = st.session_state.outcomes[0]["id"]
-            else:
-                keep_outcome_id = None
-
-            # Ensure the (single) Outcome points at the (single) Goal, if both exist
-            if keep_goal_id and keep_outcome_id:
-                st.session_state.outcomes[0]["parent_id"] = keep_goal_id
 
             # --- Import Identification sheet (if present) and update ID page state ---
             if "Identification" in xls.sheet_names:
@@ -1870,39 +1779,34 @@ if tabs[5].button("Generate Excel File"):
     ws_id.append(["Outputs (count)", outputs_count])
     ws_id.append(["KPIs (count)", kpis_count])
 
-    # Sheet 1: Summary (Goal/Outcome/Output)
-    s1 = wb.create_sheet("Summary", 1)  # index 1 = after "Identification"
-    s1.append(["Level", "Text / Title", "Parent ID", "Assumptions"])
+    # Sheet 1: Summary (Goal/Outcome/Output) — with explicit IDs
+    s1 = wb.create_sheet("Summary", 1)
+    s1.append(["RowLevel", "ID", "ParentID", "Text / Title", "Assumptions"])
 
-    # Goal row(s) – no assumptions
+    # Goal rows
     for row in st.session_state.get("impacts", []):
-        s1.append([row.get("level", "Goal"), row.get("name", ""), "", ""])
+        s1.append(["Goal", row.get("id", ""), "", row.get("name", ""), ""])
 
-    # Outcome row(s) – no assumptions
+    # Outcome rows
     for row in st.session_state.get("outcomes", []):
-        s1.append([row.get("level", "Outcome"), row.get("name", ""), row.get("parent_id", ""), ""])
+        s1.append(["Outcome", row.get("id", ""), row.get("parent_id", ""), row.get("name", ""), ""])
 
-    # Output row(s) – include assumptions
+    # Output rows (include assumptions)
     for row in st.session_state.get("outputs", []):
         s1.append([
-            row.get("level", "Output"),
-            row.get("name", ""),
+            "Output",
+            row.get("id", ""),
             row.get("parent_id", ""),
+            row.get("name", ""),
             row.get("assumptions", "")
         ])
 
-    # Sheet 2: KPI Matrix (Output > KPI)
+    # Sheet 2: KPI Matrix — include KPIID and ParentID (labels are just helpers)
     s2 = wb.create_sheet("KPI Matrix")
     s2.append([
-        "Parent Level",
-        "Parent (label)",
-        "KPI",
-        "Baseline",
-        "Target",
-        "Start Date",
-        "End Date",
-        "Linked to Payment",
-        "Means of Verification",
+        "KPIID", "Parent Level", "ParentID", "Parent (label)",
+        "KPI", "Baseline", "Target", "Start Date", "End Date",
+        "Linked to Payment", "Means of Verification"
     ])
 
     out_nums, kpi_nums = compute_numbers()
@@ -1911,21 +1815,17 @@ if tabs[5].button("Generate Excel File"):
 
     for k in st.session_state.kpis:
         plevel = k.get("parent_level", "Output")
-        if plevel == "Outcome":
-            parent_label = f"Outcome — {outcome_name}"
-        else:
-            pid = k.get("parent_id", "")
-            parent_label = f"Output {out_nums.get(pid, '')} — {output_title.get(pid, '')}"
-
-        # numbering only for output-level KPIs
-        k_label = (f"KPI {kpi_nums.get(k['id'], '')} — {k.get('name', '')}"
-                   if plevel != "Outcome"
-                   else f"KPI — {k.get('name', '')}")
-
+        pid = k.get("parent_id", "")
+        parent_label = (
+            f"Outcome — {outcome_name}" if plevel == "Outcome"
+            else f"Output {out_nums.get(pid, '')} — {output_title.get(pid, '')}"
+        )
         s2.append([
+            k.get("id", ""),
             plevel,
+            pid,
             parent_label,
-            k_label,
+            k.get("name", ""),
             k.get("baseline", ""),
             k.get("target", ""),
             fmt_dd_mmm_yyyy(k.get("start_date")),
@@ -1937,23 +1837,35 @@ if tabs[5].button("Generate Excel File"):
     # Workplan (export)
     out_nums, kpi_nums, act_nums = compute_numbers(include_activities=True)
     ws2 = wb.create_sheet("Workplan")
-    ws2.append(["Activity ID", "Activity #", "Output", "Activity", "Owner", "Start", "End", "Status", "% complete",
-                "Linked KPIs", "Milestones", "Notes", "Dependencies"])
+    ws2.append([
+        "Activity ID", "Activity #",
+        "OutputID", "Output",
+        "Activity", "Owner", "Start", "End",
+        "Status", "% complete",
+        "Linked KPI IDs", "Linked KPIs",
+        "Milestones", "Notes", "Dependencies"
+    ])
+
     id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
     id_to_kpi = {k["id"]: (k.get("name") or "") for k in st.session_state.kpis}
 
     for a in st.session_state.workplan:
         ws2.append([
-            a["id"],
-            act_nums.get(a["id"], ""),  # ← uses act_nums
-            id_to_output.get(a["output_id"], ""),
-            a["name"], a["owner"],
-            fmt_dd_mmm_yyyy(a["start"]), fmt_dd_mmm_yyyy(a["end"]),
-            a["status"], a["progress"],
-            ", ".join(id_to_kpi.get(i, "") for i in (a.get("kpi_ids") or [])),
+            a.get("id", ""),
+            act_nums.get(a["id"], ""),
+            a.get("output_id", ""),
+            id_to_output.get(a.get("output_id"), ""),
+            a.get("name", ""),
+            a.get("owner", ""),
+            fmt_dd_mmm_yyyy(a.get("start")),
+            fmt_dd_mmm_yyyy(a.get("end")),
+            a.get("status", "planned"),
+            a.get("progress", 0),
+            ",".join(a.get("kpi_ids") or []),  # machine IDs
+            ", ".join(id_to_kpi.get(i, "") for i in (a.get("kpi_ids") or [])),  # display names
             " | ".join(a.get("milestones") or []),
             a.get("notes", ""),
-            ", ".join(filter(None, a.get("dependencies") or [])),
+            ",".join(filter(None, a.get("dependencies") or [])),  # machine IDs
         ])
 
     # Budget

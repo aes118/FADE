@@ -6,10 +6,7 @@
 5. Streamlit Cloud redeploys from `main` automatically.
 
 ## Everyday update (Terminal, same result)
-```powershell
-# from the project root
-git pull --rebase        # grabs any remote changes first (safe habit)
-git add -A
+git add .
 git commit -m "Describe the change"
 git push                 # goes to origin/main (already tracked)
 ```
