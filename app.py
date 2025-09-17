@@ -14,7 +14,7 @@ import streamlit as st, requests, tempfile, os
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Falcon Awards Application Portal", layout="wide")
-st.sidebar.image("glide_logo.png", use_container_width=True)
+st.sidebar.image("glide_logo.png", width="stretch")
 
 # ---------------- Helpers & State ----------------
 def _s(v):
@@ -1888,15 +1888,19 @@ if tabs[5].button("Generate Excel File"):
 
     for r in st.session_state.budget:
         out_id, item, cat, unit, qty, unit_cost, curr, total, blid = _budget_unpack(r)
-        ws3.append([out_id, id_to_output_name.get(out_id, ""), item, cat, unit,
-                    qty, unit_cost, curr, total, blid])
+        ws3.append([
+            blid, out_id, id_to_output_name.get(out_id, ""),
+            item, cat, unit, qty, unit_cost, curr, total
+        ])
 
     # OPTIONAL Excel number formats (update column indices because we added "Output")
     for row in ws3.iter_rows(min_row=2):
-        # columns (1-indexed): 1 OutputID, 2 Output, 3 Item, 4 Category, 5 Unit, 6 Qty, 7 Unit Cost, 8 Currency, 9 Total
-        row[5].number_format = '#,##0.00'  # Qty (col 6)
-        row[6].number_format = '#,##0.00'  # Unit Cost (col 7)
-        row[8].number_format = '#,##0.00'  # Total (col 9)
+        # columns (1-indexed):
+        # 1 BudgetLineID, 2 OutputID, 3 Output, 4 Item, 5 Category,
+        # 6 Unit, 7 Qty, 8 Unit Cost, 9 Currency, 10 Total
+        row[6].number_format = '#,##0.00'  # Qty (col 7)
+        row[7].number_format = '#,##0.00'  # Unit Cost (col 8)
+        row[9].number_format = '#,##0.00'  # Total (col 10)
 
     buf = BytesIO()
     wb.save(buf)
