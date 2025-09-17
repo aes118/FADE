@@ -506,7 +506,7 @@ def view_budget_item_card(row, id_to_output) -> str:
     row: [OutputID, Item, Category, Unit, Qty, Unit Cost, Currency, Total]
     id_to_output: {output_id -> output name}
     """
-    out_id, item, cat, unit, qty, uc, cur, tot = row
+    out_id, item, cat, unit, qty, uc, cur, tot, blid = _budget_unpack(row)
     out_name = id_to_output.get(out_id, "(unassigned)")
     # rows (label/value)
     lines = [
@@ -525,6 +525,19 @@ def view_budget_item_card(row, id_to_output) -> str:
     )
     # reuse the blue style
     return f"<div class='lf-card lf-card--budget'>{body}</div>"
+
+def _budget_unpack(row):
+    """Return (out_id,item,cat,unit,qty,uc,cur,tot,blid) and normalize row to include blid."""
+    if len(row) == 9:
+        out_id, item, cat, unit, qty, uc, cur, tot, blid = row
+    else:
+        out_id, item, cat, unit, qty, uc, cur, tot = row
+        blid = generate_id()
+        row.append(blid)  # normalize in place
+    return out_id, item, cat, unit, qty, uc, cur, tot, blid
+
+def _budget_make(out_id, item, cat, unit, qty, uc, cur, tot, blid=None):
+    return [out_id, item, cat, unit, float(qty), float(uc), cur, float(tot), blid or generate_id()]
 
 # ---------------- CSS for cards ----------------
 def inject_logframe_css():
@@ -922,7 +935,8 @@ if uploaded_file is not None:
 
                     # Only keep rows we can link to an Output and that have an item
                     if out_id and item:
-                        imported.append([out_id, item, cat, unit, qty, uc, cur, tot])
+                        blid = _s(r.get("BudgetLineID")) or None
+                        imported.append(_budget_make(out_id, item, cat, unit, qty, uc, cur, tot, blid))
 
                 if imported:
                     st.session_state.budget = imported
@@ -1612,16 +1626,11 @@ with tabs[4]:
                         st.warning("Item is required.")
                     else:
                         # canonical 8-column schema
-                        st.session_state.budget.append([
-                            output_parent["id"],         # OutputID
-                            item.strip(),                # Item
-                            category,                    # Category
-                            unit.strip(),                # Unit
-                            float(quantity),             # Qty
-                            float(unit_cost),            # Unit Cost
-                            currency.strip(),            # Currency
-                            float(total)                 # Total
-                        ])
+                        st.session_state.budget.append(_budget_make(
+                            output_parent["id"], item.strip(), category, unit.strip(),
+                            quantity, unit_cost, currency.strip(), total
+                        ))
+
                         st.rerun()
 
     # ---------- Grouped by Output, compact blue rows ----------
@@ -1629,7 +1638,7 @@ with tabs[4]:
 
     def render_budget_row_inline(row):
         """Return compact inline HTML for one budget row."""
-        out_id, item, cat, unit, qty, uc, cur, tot = row
+        out_id, item, cat, unit, qty, uc, cur, tot, blid = _budget_unpack(row)
         return (
             "<div class='lf-budget-row'>"
             "  <div class='lf-budget-cells'>"
@@ -1662,12 +1671,12 @@ with tabs[4]:
 
         subtotal = 0.0
         for idx, r in rows_here:
-            out_id, item, cat, unit, qty, uc, cur, tot = r
+            out_id, item, cat, unit, qty, uc, cur, tot, blid = _budget_unpack(r)
             subtotal += float(tot or 0.0)
             grand_total += float(tot or 0.0)
 
             # Unique suffix for keys (prevents duplicate keys even if order changes)
-            row_uid = f"{idx}_{out_id}_{hash(item)}_{int(qty)}_{int(uc)}"
+            row_uid = f"{idx}_{blid}"  # now stable, based on BudgetLineID
 
             if st.session_state.get("edit_budget_row") == idx:
                 # ----- inline edit mode (row replaced by small form) -----
@@ -1698,10 +1707,10 @@ with tabs[4]:
                     st.caption(f"New total: {fmt_money(new_tot)}")
 
                 if e2.button("💾", key=f"b_save_{row_uid}"):
-                    st.session_state.budget[idx] = [
+                    st.session_state.budget[idx] = _budget_make(
                         out_sel["id"], new_item.strip(), new_cat, new_unit.strip(),
-                        float(new_qty), float(new_uc), new_cur.strip(), float(new_tot)
-                    ]
+                        new_qty, new_uc, new_cur.strip(), new_tot, blid
+                    )
                     st.session_state["edit_budget_row"] = None
                     st.rerun()
 
@@ -1871,22 +1880,23 @@ if tabs[5].button("Generate Excel File"):
     # Budget
     # --- Budget (export) ---
     ws3 = wb.create_sheet("Budget")
-    ws3.append(["OutputID", "Output", "Item", "Category", "Unit", "Qty", "Unit Cost", "Currency", "Total"])
+    ws3.append(["BudgetLineID", "OutputID", "Output", "Item", "Category", "Unit", "Qty",
+                "Unit Cost", "Currency", "Total",])
 
     # map id -> plain output name (not label)
     id_to_output_name = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
 
     for r in st.session_state.budget:
-        out_id, item, cat, unit, qty, unit_cost, curr, total = r
-        out_name = id_to_output_name.get(out_id, "")
-        ws3.append([out_id, out_name, item, cat, unit, qty, unit_cost, curr, total])
+        out_id, item, cat, unit, qty, unit_cost, curr, total, blid = _budget_unpack(r)
+        ws3.append([out_id, id_to_output_name.get(out_id, ""), item, cat, unit,
+                    qty, unit_cost, curr, total, blid])
 
     # OPTIONAL Excel number formats (update column indices because we added "Output")
     for row in ws3.iter_rows(min_row=2):
         # columns (1-indexed): 1 OutputID, 2 Output, 3 Item, 4 Category, 5 Unit, 6 Qty, 7 Unit Cost, 8 Currency, 9 Total
-        row[5].number_format = '#,##0.00'  # Qty
-        row[6].number_format = '#,##0.00'  # Unit Cost
-        row[8].number_format = '#,##0.00'  # Total
+        row[5].number_format = '#,##0.00'  # Qty (col 6)
+        row[6].number_format = '#,##0.00'  # Unit Cost (col 7)
+        row[8].number_format = '#,##0.00'  # Total (col 9)
 
     buf = BytesIO()
     wb.save(buf)
