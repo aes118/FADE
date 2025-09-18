@@ -382,10 +382,6 @@ def build_logframe_docx():
         if bp: _add_run(p, "Baseline: ", True); _add_run(p, bp); p.add_run("\n")
         tg = (k.get("target","") or "").strip()
         if tg: _add_run(p, "Target: ", True); _add_run(p, tg); p.add_run("\n")
-        sd = fmt_dd_mmm_yyyy(k.get("start_date")); ed = fmt_dd_mmm_yyyy(k.get("end_date"))
-        if sd or ed:
-            _add_run(p, "Start: ", True); _add_run(p, sd or "—"); p.add_run("\n")
-            _add_run(p, "End: ", True); _add_run(p, ed or "—")
 
         # Col 2: MoV
         _set_cell_text(r.cells[2], (k.get("mov") or "").strip() or "—")
@@ -458,11 +454,6 @@ def build_logframe_docx():
             if bp: _add_run(p, "Baseline: ", True); _add_run(p, bp); p.add_run("\n")
             tg = (k.get("target","") or "").strip()
             if tg: _add_run(p, "Target: ", True); _add_run(p, tg); p.add_run("\n")
-            sd = fmt_dd_mmm_yyyy(k.get("start_date")); ed = fmt_dd_mmm_yyyy(k.get("end_date"))
-            if sd or ed:
-                _add_run(p, "Start: ", True); _add_run(p, sd or "—"); p.add_run("\n")
-                _add_run(p, "End: ", True); _add_run(p, ed or "—")
-
             _set_cell_text(r.cells[2], (k.get("mov") or "").strip() or "—")
 
         last = len(tbl.rows) - 1
@@ -1152,11 +1143,6 @@ with tabs[2].expander("➕ Add Outcome KPI (one per outcome)"):
                 kpi_text = st.text_area("Outcome KPI*")
                 baseline = st.text_input("Baseline")
                 target   = st.text_input("Target")
-                c1, c2 = st.columns(2)
-                with c1:
-                    start_date = st.date_input("Start date")
-                with c2:
-                    end_date   = st.date_input("End date")
                 payment_linked = st.checkbox("Linked to Payment (optional)")
                 mov = st.text_area("Means of Verification")
 
@@ -1169,8 +1155,6 @@ with tabs[2].expander("➕ Add Outcome KPI (one per outcome)"):
                         "parent_level": "Outcome",   # <<< key difference
                         "baseline": baseline.strip(),
                         "target": target.strip(),
-                        "start_date": start_date,
-                        "end_date": end_date,
                         "linked_payment": bool(payment_linked),
                         "mov": mov.strip(),
                     })
@@ -1208,11 +1192,6 @@ with tabs[2].expander("➕ Add KPI"):
             kpi_text = st.text_area("KPI*")
             baseline = st.text_input("Baseline")
             target   = st.text_input("Target")
-            c1, c2 = st.columns(2)
-            with c1:
-                start_date = st.date_input("Start date")
-            with c2:
-                end_date   = st.date_input("End date")
             payment_linked = st.checkbox("Linked to Payment (optional)")
             mov = st.text_area("Means of Verification")
 
@@ -1225,8 +1204,6 @@ with tabs[2].expander("➕ Add KPI"):
                     "parent_level": "Output",   # <-- fixed
                     "baseline": baseline.strip(),
                     "target": target.strip(),
-                    "start_date": start_date,
-                    "end_date": end_date,
                     "linked_payment": bool(payment_linked),
                     "mov": mov.strip(),
                 })
@@ -1284,8 +1261,6 @@ def view_kpi(k):
 
     bp  = (k.get("baseline") or "").strip()
     tg  = (k.get("target") or "").strip()
-    sd  = fmt_dd_mmm_yyyy(k.get("start_date")) or "—"
-    ed  = fmt_dd_mmm_yyyy(k.get("end_date")) or "—"
     mov = (k.get("mov") or "").strip()
 
     chip = (
@@ -1305,10 +1280,6 @@ def view_kpi(k):
         lines.append(f"<div class='lf-line'><b>Baseline:</b> {bp}</div>")
     if tg:
         lines.append(f"<div class='lf-line'><b>Target:</b> {tg}</div>")
-    if (sd != '—') or (ed != '—'):
-        lines.append(
-            f"<div class='lf-line'><b>Start date:</b> {sd} &nbsp;&nbsp;•&nbsp;&nbsp; <b>End date:</b> {ed}</div>"
-        )
     if mov:
         lines.append(f"<div class='lf-line'><b>Means of Verification:</b> {mov}</div>")
 
@@ -1407,12 +1378,6 @@ with tabs[2]:
                         ("name", st.text_area, "KPI"),
                         ("baseline", st.text_input, "Baseline"),
                         ("target", st.text_input, "Target"),
-                        ("start_date",
-                         lambda label, value, key: st.date_input(label, value=value or date.today(), key=key),
-                         "Start date"),
-                        ("end_date",
-                         lambda label, value, key: st.date_input(label, value=value or date.today(), key=key),
-                         "End date"),
                         ("linked_payment",
                          lambda label, value, key: st.checkbox(label, value=bool(value), key=key),
                          "Linked to Payment"),
@@ -1451,12 +1416,6 @@ with tabs[2]:
                                 ("name", st.text_area, "KPI"),
                                 ("baseline", st.text_input, "Baseline"),
                                 ("target", st.text_input, "Target"),
-                                ("start_date",
-                                 lambda label, value, key: st.date_input(label, value=value or date.today(), key=key),
-                                 "Start date"),
-                                ("end_date",
-                                 lambda label, value, key: st.date_input(label, value=value or date.today(), key=key),
-                                 "End date"),
                                 ("linked_payment",
                                  lambda label, value, key: st.checkbox(label, value=bool(value), key=key),
                                  "Linked to Payment"),
@@ -1814,7 +1773,7 @@ if tabs[5].button("Generate Excel File"):
     s2 = wb.create_sheet("KPI Matrix")
     s2.append([
         "KPIID", "Parent Level", "ParentID", "Parent (label)",
-        "KPI", "Baseline", "Target", "Start Date", "End Date",
+        "KPI", "Baseline", "Target",
         "Linked to Payment", "Means of Verification"
     ])
 
@@ -1837,8 +1796,6 @@ if tabs[5].button("Generate Excel File"):
             k.get("name", ""),
             k.get("baseline", ""),
             k.get("target", ""),
-            fmt_dd_mmm_yyyy(k.get("start_date")),
-            fmt_dd_mmm_yyyy(k.get("end_date")),
             "Yes" if k.get("linked_payment") else "No",
             k.get("mov", ""),
         ])
