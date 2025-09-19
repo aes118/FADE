@@ -475,19 +475,12 @@ def view_activity_readonly(a, label, id_to_output, id_to_kpi):
     sd = fmt_dd_mmm_yyyy(a.get("start")) or "—"
     ed = fmt_dd_mmm_yyyy(a.get("end"))   or "—"
 
-    notes_html = ""
-    if a.get("notes"):
-        notes_html = f"<div class='lf-line'><b>Notes:</b> {escape(a.get('notes',''))}</div>"
-
     body = (
         f"<div class='lf-activity-title'>Activity {escape(label)} — {escape(a.get('name',''))}</div>"
         f"<div class='lf-line'><b>Output:</b> {escape(out_name)}</div>"
         f"<div class='lf-line'><b>Owner:</b> {escape(a.get('owner','') or '—')}</div>"
         f"<div class='lf-line'><b>Start date:</b> {sd} &nbsp;&nbsp;•&nbsp;&nbsp; <b>End date:</b> {ed}</div>"
-        f"<div class='lf-line'><b>Status:</b> {escape(a.get('status','planned'))} &nbsp;&nbsp; "
-        f"<b>% complete:</b> {int(a.get('progress',0))}%</div>"
         f"<div class='lf-line'><b>Linked KPIs:</b> {escape(kpis_txt)}</div>"
-        f"{notes_html}"
     )
 
     return view_logframe_element(body, kind="activity")
@@ -833,8 +826,7 @@ if uploaded_file is not None:
 
                 # detect "rich" vs "simple" format
                 rich = {"Activity ID", "Activity #", "OutputID", "Output", "Activity", "Owner", "Start", "End",
-                        "Status", "% complete", "Linked KPI IDs", "Linked KPIs", "Milestones", "Notes",
-                        "Dependencies"}.issubset(set(wdf.columns))
+                        "Linked KPI IDs", "Linked KPIs"}.issubset(set(wdf.columns))
 
                 st.session_state.workplan = []  # reset before loading
 
@@ -865,13 +857,7 @@ if uploaded_file is not None:
                             "name": _s(row.get("Activity")),
                             "owner": _s(row.get("Owner")),
                             "start": parse_date_like(row.get("Start")),
-                            "end": parse_date_like(row.get("End")),
-                            "status": _s(row.get("Status") or "planned"),
-                            "progress": int(float(row.get("% complete") or 0)),
-                            "kpi_ids": linked_kpi_ids,
-                            "milestones": [m.strip() for m in _s(row.get("Milestones")).split("|") if m.strip()],
-                            "dependencies": dep_ids,
-                            "notes": _s(row.get("Notes")),
+                            "end": parse_date_like(row.get("End"))
                         })
 
                 else:
@@ -886,12 +872,7 @@ if uploaded_file is not None:
                             "owner": _s(row.get("Owner")),
                             "start": parse_date_like(row.get("Start Date")),
                             "end": parse_date_like(row.get("End Date")),
-                            "status": "planned",
-                            "progress": 0,
                             "kpi_ids": [],
-                            "milestones": [_s(row.get("Milestone"))] if _s(row.get("Milestone")) else [],
-                            "dependencies": [],
-                            "notes": "",
                         })
 
             # ---- Budget import (optional sheet)
@@ -1300,11 +1281,7 @@ def view_activity(a: dict, act_label: str, id_to_output: dict, id_to_kpi: dict) 
     owner    = escape(a.get("owner","") or "—")
     sd       = fmt_dd_mmm_yyyy(a.get("start")) or "—"
     ed       = fmt_dd_mmm_yyyy(a.get("end"))   or "—"
-    status   = escape(a.get("status","planned"))
-    prog     = f"{int(a.get('progress',0))}%"
     kpis_txt = ", ".join(escape(id_to_kpi.get(kid,"")) for kid in (a.get("kpi_ids") or [])) or "—"
-    miles    = " | ".join(escape(m) for m in (a.get("milestones") or [])) or "—"
-    notes    = escape(a.get("notes","") or "")
 
     title_html = f"<div class='lf-activity-title'>{title}</div>"
     rows = [
@@ -1312,11 +1289,7 @@ def view_activity(a: dict, act_label: str, id_to_output: dict, id_to_kpi: dict) 
         ("Owner", owner),
         ("Start date", sd),
         ("End date", ed),
-        ("Status", status),
-        ("% complete", prog),
         ("Linked KPIs", kpis_txt),
-        ("Milestones", miles),
-        ("Notes", notes),  # the card helper will skip empty values if you prefer
     ]
 
     # Build rows (simple label/value pairs). You can skip empty ones here if desired.
@@ -1457,19 +1430,6 @@ with tabs[3]:
             with c2:
                 end = st.date_input("End date*")
 
-            status = st.selectbox("Status", ["planned", "in_progress", "completed", "cancelled"], index=0)
-            progress = st.slider("% complete", 0, 100, 0)
-            milestones = st.text_area("Milestones / deliverables (optional, one per line)")
-            notes = st.text_area("Notes (optional)")
-
-            # Dependencies: choose among existing activities (by name)
-            existing_acts = st.session_state.get("workplan", [])
-            deps = st.multiselect(
-                "Depends on (optional)",
-                existing_acts,
-                format_func=lambda a: a.get("name") if isinstance(a, dict) else (a[0] if a else "")
-            )
-
             submitted = st.form_submit_button("Add to Workplan")
             if submitted and name.strip() and owner.strip() and output_parent and start and end and start <= end:
                 st.session_state.workplan.append({
@@ -1479,12 +1439,7 @@ with tabs[3]:
                     "kpi_ids": [k["id"] for k in kpi_links],
                     "owner": owner.strip(),
                     "start": start,
-                    "end": end,
-                    "status": status,
-                    "progress": int(progress),
-                    "milestones": [m.strip() for m in milestones.splitlines() if m.strip()],
-                    "dependencies": [ (d.get("id") if isinstance(d, dict) else None) for d in deps ],
-                    "notes": notes.strip() if notes else ""
+                    "end": end
                 })
                 st.rerun()
             elif submitted:
@@ -1516,14 +1471,6 @@ with tabs[3]:
                             new_start = st.date_input("Start date", value=a.get("start"), key=f"a_start_{a['id']}")
                         with cB:
                             new_end = st.date_input("End date", value=a.get("end"), key=f"a_end_{a['id']}")
-                        new_status = st.selectbox(
-                            "Status", ["planned", "in_progress", "completed", "cancelled"],
-                            index=["planned", "in_progress", "completed", "cancelled"].index(
-                                a.get("status", "planned")),
-                            key=f"a_status_{a['id']}"
-                        )
-                        new_prog = st.slider("% complete", 0, 100, int(a.get("progress", 0)), key=f"a_prog_{a['id']}")
-                        new_notes = st.text_area("Notes", value=a.get("notes", ""), key=f"a_notes_{a['id']}")
                     if e2.button("💾", key=f"a_save_{a['id']}"):
                         idx = _find_by_id(st.session_state.workplan, a["id"])
                         if idx is not None:
@@ -1532,9 +1479,6 @@ with tabs[3]:
                                 "owner": new_owner.strip(),
                                 "start": new_start,
                                 "end": new_end,
-                                "status": new_status,
-                                "progress": int(new_prog),
-                                "notes": new_notes.strip(),
                             })
                         st.session_state["edit_activity"] = None
                         st.rerun()
@@ -1807,9 +1751,7 @@ if tabs[5].button("Generate Excel File"):
         "Activity ID", "Activity #",
         "OutputID", "Output",
         "Activity", "Owner", "Start", "End",
-        "Status", "% complete",
-        "Linked KPI IDs", "Linked KPIs",
-        "Milestones", "Notes", "Dependencies"
+        "Linked KPI IDs", "Linked KPIs"
     ])
 
     id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
@@ -1825,13 +1767,8 @@ if tabs[5].button("Generate Excel File"):
             a.get("owner", ""),
             fmt_dd_mmm_yyyy(a.get("start")),
             fmt_dd_mmm_yyyy(a.get("end")),
-            a.get("status", "planned"),
-            a.get("progress", 0),
             ",".join(a.get("kpi_ids") or []),  # machine IDs
             ", ".join(id_to_kpi.get(i, "") for i in (a.get("kpi_ids") or [])),  # display names
-            " | ".join(a.get("milestones") or []),
-            a.get("notes", ""),
-            ",".join(filter(None, a.get("dependencies") or [])),  # machine IDs
         ])
 
     # Budget
