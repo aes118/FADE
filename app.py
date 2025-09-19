@@ -13,6 +13,8 @@ import hashlib
 import streamlit as st, requests, tempfile, os
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from docx.enum.section import WD_ORIENT, WD_SECTION_START
+
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Falcon Awards Application Portal", layout="wide")
@@ -442,12 +444,43 @@ def build_logframe_docx():
         run.font.size = Pt(11)
         return run
 
+    def _h1(text):
+        p = doc.add_paragraph(text)
+        p.style = doc.styles['Heading 1']
+        return p
+
+    def _new_section(title):
+        # page/section break + H1
+        doc.add_section(WD_SECTION_START.NEW_PAGE)
+        _h1(title)
+
+    from io import BytesIO
+
+    def _gantt_png_buf():
+        """Render the workplan Gantt to a PNG buffer for docx embedding."""
+        import matplotlib.pyplot as plt
+        df = _workplan_df()
+        if df.empty:
+            return None
+        h = min(1.2 + 0.35 * len(df), 12)  # scale height with number of rows
+        fig, ax = plt.subplots(figsize=(11, h))
+        _draw_gantt(ax, df, show_today=False)
+        # extra space for legend + rotated ticks
+        fig.subplots_adjust(left=0.26, right=0.98, top=0.96, bottom=0.34)
+        buf = BytesIO()
+        fig.savefig(buf, format="png", dpi=220)  # slightly higher DPI for Word
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+
     # ---- Document setup: Portrait + standard margins
     doc = Document()
     sec = doc.sections[0]
     sec.orientation = WD_ORIENT.PORTRAIT
     for side in ("top_margin", "bottom_margin", "left_margin", "right_margin"):
         setattr(sec, side, Cm(2.54))
+
+    _h1("LOGFRAME")
 
     # ---- Data & numbering
     goal_text = (st.session_state.impacts[0]["name"] if st.session_state.get("impacts") else "")
@@ -607,6 +640,90 @@ def build_logframe_docx():
         if last > first:
             tbl.cell(first, 0).merge(tbl.cell(last, 0))
             tbl.cell(first, 3).merge(tbl.cell(last, 3))
+
+    # ==== WORKPLAN – Activities (table) ====
+    from docx.shared import Cm
+    _new_section("WORKPLAN")
+
+    # Build tidy DF exactly as in the app
+    df_wp = _workplan_df()  # columns: Activity | Output | Start | End
+
+    # Header: same 4 columns as requested
+    t_act = doc.add_table(rows=1, cols=4)
+    t_act.style = "Table Grid"
+    t_act.alignment = WD_TABLE_ALIGNMENT.LEFT
+
+    hdr = t_act.rows[0]
+    for i, lab in enumerate(("Output", "Activity", "Start", "End")):
+        _set_cell_text(hdr.cells[i], lab, bold=True, white=True)
+        _shade(hdr.cells[i], PRIMARY_SHADE)
+    _repeat_header(hdr)
+
+    from docx.shared import Cm
+    # lock widths, similar proportions to logframe
+    COLW = (Cm(6.0), Cm(9.5), Cm(3.0), Cm(3.0))
+    for i, w in enumerate(COLW):
+        for r in t_act.rows:
+            r.cells[i].width = w
+        t_act.columns[i].width = w
+
+    # We want outputs numbered (1,2,...) in the same order as logframe
+    out_nums, _ = compute_numbers()
+    id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
+
+    # Map output name -> number (using id_to_output & out_nums)
+    # (df_wp has Output names already; we need to recover numbering by matching)
+    name_to_num = {}
+    for o in st.session_state.outputs:
+        num = out_nums.get(o["id"], "")
+        name = id_to_output.get(o["id"], "")
+        if name:
+            name_to_num[name] = num
+
+    # Group activities by Output name and render rows with merged output cells
+    if df_wp.empty:
+        row = t_act.add_row()
+        _set_cell_text(row.cells[0], "—")
+        _set_cell_text(row.cells[1], "No scheduled activities")
+        _set_cell_text(row.cells[2], "—")
+        _set_cell_text(row.cells[3], "—")
+    else:
+        # keep the same stable order as the app: Output -> Start -> Activity
+        df_wp = df_wp.sort_values(["Output", "Start", "Activity"], kind="stable").reset_index(drop=True)
+
+        for out_name, sub in df_wp.groupby("Output", sort=False):
+            # rows for this output
+            start_row = len(t_act.rows)  # first data row index for this output
+            for _, r in sub.iterrows():
+                row = t_act.add_row()
+                # keep widths on the new row
+                for i, w in enumerate(COLW):
+                    row.cells[i].width = w
+
+                # Output cell text is filled later (after merge)
+                _set_cell_text(row.cells[1], str(r["Activity"]))
+                _set_cell_text(row.cells[2], r["Start"].strftime("%d/%b/%Y"))
+                _set_cell_text(row.cells[3], r["End"].strftime("%d/%b/%Y"))
+
+            end_row = len(t_act.rows) - 1  # last data row for this output
+            if end_row >= start_row:
+                # Merge the first column for this output group
+                merged = t_act.cell(start_row, 0).merge(t_act.cell(end_row, 0))
+                # Numbered label: "Output N — Name"
+                label = f"Output {name_to_num.get(out_name, '')} — {out_name}".strip(" —")
+                _set_cell_text(merged, label)
+
+    doc.add_paragraph("")  # a small gap after the table
+
+    # ===== WORKPLAN – Gantt image =====
+    try:
+        gantt_buf = _gantt_png_buf()
+        if gantt_buf:
+            from docx.shared import Cm
+            doc.add_picture(gantt_buf, width=Cm(16))  # fit content width
+    except Exception:
+        # If matplotlib not available at runtime, do not fail the export
+        pass
 
     # ---- Save to buffer
     buf = BytesIO()
@@ -1974,7 +2091,7 @@ if tabs[5].button("Generate Word Document"):
         proj_title = (st.session_state.get("id_info", {}) or {}).get("title", "") or "Project"
         safe = re.sub(r"[^A-Za-z0-9]+", "_", proj_title).strip("_") or "Project"
         tabs[5].download_button(
-            "📥 Download Word Logframe",
+            "📥 Download Word Document",
             data=word_buf,
             file_name=f"Logframe_{safe}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1982,4 +2099,4 @@ if tabs[5].button("Generate Word Document"):
     except ModuleNotFoundError:
         tabs[5].error("`python-docx` is required. Install it with: pip install python-docx")
     except Exception as e:
-        tabs[5].error(f"Could not generate the Word logframe: {e}")
+        tabs[5].error(f"Could not generate the Word Document: {e}")
