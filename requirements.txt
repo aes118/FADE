@@ -3,3 +3,4 @@ pandas
 openpyxl
 Pillow
 python-docx>=0.8.11
+matplotlib

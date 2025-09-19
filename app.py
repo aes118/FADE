@@ -11,6 +11,8 @@ from html import escape
 from datetime import datetime, date
 import hashlib
 import streamlit as st, requests, tempfile, os
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Falcon Awards Application Portal", layout="wide")
@@ -154,6 +156,94 @@ def compute_numbers(include_activities: bool = False):
                 act_num[a["id"]] = f"{n}.{q}"
                 q += 1
     return out_num, kpi_num, act_num
+
+def _workplan_df():
+    """Return a tidy DF with Activity, Output, Start, End (rows that have both dates)."""
+    import pandas as pd
+    outs = {o["id"]: (o.get("name") or "Output") for o in st.session_state.get("outputs", [])}
+    rows = []
+    for a in st.session_state.get("workplan", []):
+        s, e = a.get("start"), a.get("end")
+        if s and e:
+            rows.append({
+                "Activity": a.get("name",""),
+                "Output": outs.get(a.get("output_id"), "(unassigned)"),
+                "Start": s,
+                "End": e,
+            })
+    if not rows:
+        return pd.DataFrame(columns=["Activity","Output","Start","End"])
+    return pd.DataFrame(rows).sort_values(["Output","Start","Activity"], kind="stable").reset_index(drop=True)
+
+def _draw_gantt(ax, df):
+    """
+    Draw a Gantt chart on the given matplotlib Axes.
+    - Separates outputs with horizontal lines
+    - Colors bars by Output
+    - X axis format: MMM-YYYY
+    """
+    import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+
+    if df.empty:
+        ax.text(0.5, 0.5, "No activities with both start & end dates", ha="center", va="center")
+        ax.axis("off")
+        return
+
+    # Ensure sort by Output then Start
+    df = df.sort_values(["Output", "Start", "Activity"], kind="stable").reset_index(drop=True)
+
+    # Map outputs -> color (tab20 palette cycling)
+    outputs = df["Output"].unique().tolist()
+    cmap = plt.get_cmap("tab20")
+    color_map = {out: cmap(i % 20) for i, out in enumerate(outputs)}
+
+    # y positions (numeric) so we can draw separators accurately
+    y = list(range(len(df)))
+    widths = [(e - s).days or 0.5 for s, e in zip(df["Start"], df["End"])]
+    lefts = df["Start"].tolist()
+    colors = [color_map[o] for o in df["Output"]]
+
+    ax.barh(y, widths, left=lefts, color=colors, edgecolor="none")
+
+    # Labels
+    ax.set_yticks(y)
+    ax.set_yticklabels(df["Activity"])
+    ax.invert_yaxis()  # earliest at top
+
+    # X axis: monthly ticks, MMM-YYYY format
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=6, maxticks=12))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b-%Y"))
+    for label in ax.get_xticklabels():
+        label.set_rotation(30)
+        label.set_ha("right")
+
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Activity")
+
+    # Light vertical grid
+    ax.grid(axis="x", linestyle=":", alpha=0.4)
+
+    # Output separators: draw a thin line between groups
+    # Find boundaries where Output changes (in sorted df)
+    sep_rows = [i for i in range(1, len(df)) if df.loc[i, "Output"] != df.loc[i-1, "Output"]]
+    xmin, xmax = ax.get_xlim()
+    for i in sep_rows:
+        ax.hlines(i - 0.5, xmin, xmax, colors="#999999", linestyles="-", linewidth=0.8, alpha=0.6)
+    # keep lines spanning full width even if autoscale changes
+    ax.set_xlim(xmin, xmax)
+
+    # Legend by Output
+    legend_handles = [Patch(facecolor=color_map[o], label=o) for o in outputs]
+    ax.legend(
+        handles=legend_handles,
+        title="Outputs",
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.30),  # center, below the axes
+        ncol=len(outputs),  # spread items in one row
+        frameon=False
+    )
 
 def select_output_id(label, current_id, key):
     """Select an Output and return its ID (options are IDs; stable + clean)."""
@@ -1461,6 +1551,19 @@ with tabs[3]:
                 st.rerun()
             elif submitted:
                 st.warning("Please fill required fields (Output, Activity, Owner, Start≤End).")
+
+    # ------- Gantt (web) -------
+    df_g = _workplan_df()
+    df_g = _workplan_df()
+    with st.expander("📈 Gantt chart (Workplan)", expanded=bool(len(df_g))):
+        if df_g.empty:
+            st.info("Add activities with start & end dates to see the Gantt.")
+        else:
+            height = min(1.2 + 0.35 * len(df_g), 12)
+            fig, ax = plt.subplots(figsize=(11, height))
+            _draw_gantt(ax, df_g)
+            fig.tight_layout()
+            st.pyplot(fig, clear_figure=True, use_container_width=True)
 
     # --- Card view (optional: put this below or instead of the table) ---
     out_nums, kpi_nums, act_nums = compute_numbers(include_activities=True)
