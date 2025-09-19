@@ -173,76 +173,116 @@ def _workplan_df():
             })
     if not rows:
         return pd.DataFrame(columns=["Activity","Output","Start","End"])
-    return pd.DataFrame(rows).sort_values(["Output","Start","Activity"], kind="stable").reset_index(drop=True)
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["Output","Start","Activity"], kind="stable")
+        .reset_index(drop=True)
+    )
 
-def _draw_gantt(ax, df):
+def _draw_gantt(ax, df, *, show_today=False):
     """
-    Draw a Gantt chart on the given matplotlib Axes.
-    - Separates outputs with horizontal lines
-    - Colors bars by Output
-    - X axis format: MMM-YYYY
+    Clean, readable Gantt:
+    - Bars colored by Output with subtle edges
+    - Group separators
+    - Major ticks by quarter, minor ticks monthly; labels MMM-YYYY
+    - Optional 'today' line
+    - Bottom-centered legend
     """
-    import matplotlib.dates as mdates
+    import numpy as np
     import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
     from matplotlib.patches import Patch
+    from datetime import date, timedelta
 
     if df.empty:
-        ax.text(0.5, 0.5, "No activities with both start & end dates", ha="center", va="center")
+        ax.text(0.5, 0.5, "No activities with both start & end dates",
+                ha="center", va="center")
         ax.axis("off")
         return
 
-    # Ensure sort by Output then Start
-    df = df.sort_values(["Output", "Start", "Activity"], kind="stable").reset_index(drop=True)
+    # ---- Order outputs by earliest start for a logical reading order
+    first_start = df.groupby("Output")["Start"].min().sort_values()
+    ordered_outputs = first_start.index.tolist()
+    df = (
+        df.assign(_out_order=df["Output"].map({o:i for i, o in enumerate(ordered_outputs)}))
+          .sort_values(["_out_order", "Start", "Activity"], kind="stable")
+          .drop(columns="_out_order")
+          .reset_index(drop=True)
+    )
 
-    # Map outputs -> color (tab20 palette cycling)
-    outputs = df["Output"].unique().tolist()
+    # ---- Stable color mapping (tab20_cycle)
     cmap = plt.get_cmap("tab20")
-    color_map = {out: cmap(i % 20) for i, out in enumerate(outputs)}
+    color_map = {o: cmap(i % 20) for i, o in enumerate(ordered_outputs)}
 
-    # y positions (numeric) so we can draw separators accurately
-    y = list(range(len(df)))
+    # ---- Build bar geometry
+    y      = np.arange(len(df))
     widths = [(e - s).days or 0.5 for s, e in zip(df["Start"], df["End"])]
-    lefts = df["Start"].tolist()
+    lefts  = df["Start"].tolist()
     colors = [color_map[o] for o in df["Output"]]
 
-    ax.barh(y, widths, left=lefts, color=colors, edgecolor="none")
+    # ---- Bars (with gentle edge for contrast)
+    ax.barh(
+        y, widths, left=lefts, color=colors,
+        edgecolor="white", linewidth=0.8, alpha=0.95
+    )
 
-    # Labels
+    # Optional: label durations at the end of each bar (uncomment to enable)
+    # for yi, s, w in zip(y, lefts, widths):
+    #     ax.text(s + timedelta(days=w) , yi, f" {int(w)}d",
+    #             va="center", ha="left", fontsize=8, color="#444")
+
+    # ---- Y axis: activities
     ax.set_yticks(y)
-    ax.set_yticklabels(df["Activity"])
-    ax.invert_yaxis()  # earliest at top
-
-    # X axis: monthly ticks, MMM-YYYY format
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=6, maxticks=12))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b-%Y"))
-    for label in ax.get_xticklabels():
-        label.set_rotation(30)
-        label.set_ha("right")
-
-    ax.set_xlabel("Date")
+    ax.set_yticklabels(df["Activity"], fontsize=9)
+    ax.invert_yaxis()
     ax.set_ylabel("Activity")
 
-    # Light vertical grid
-    ax.grid(axis="x", linestyle=":", alpha=0.4)
+    # ---- X axis: quarterly major ticks + monthly minors; labels MMM-YYYY
+    ax.xaxis.set_major_locator(mdates.MonthLocator(bymonth=(1,4,7,10)))  # Jan/Apr/Jul/Oct
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b-%Y"))
+    ax.xaxis.set_minor_locator(mdates.MonthLocator())  # every month
+    for lab in ax.get_xticklabels():
+        lab.set_rotation(30); lab.set_ha("right")
 
-    # Output separators: draw a thin line between groups
-    # Find boundaries where Output changes (in sorted df)
+    # ---- Range padding (7% of span on both sides)
+    x_min = min(df["Start"]); x_max = max(df["End"])
+    span  = (x_max - x_min).days or 1
+    pad   = max(int(span * 0.07), 7)
+    ax.set_xlim(x_min - timedelta(days=pad), x_max + timedelta(days=pad))
+
+    # ---- Grid (minor vertical dots)
+    ax.grid(axis="x", which="minor", linestyle=":", linewidth=0.6, alpha=0.35)
+    ax.grid(axis="x", which="major", linestyle="-", linewidth=0.6, alpha=0.35)
+    ax.set_xlabel("Date")
+
+    # ---- Group separators (between Outputs)
     sep_rows = [i for i in range(1, len(df)) if df.loc[i, "Output"] != df.loc[i-1, "Output"]]
     xmin, xmax = ax.get_xlim()
     for i in sep_rows:
-        ax.hlines(i - 0.5, xmin, xmax, colors="#999999", linestyles="-", linewidth=0.8, alpha=0.6)
-    # keep lines spanning full width even if autoscale changes
-    ax.set_xlim(xmin, xmax)
+        ax.hlines(i - 0.5, xmin, xmax, colors="#BFC5CC", linestyles="-", linewidth=0.8, alpha=0.7)
+    ax.set_xlim(xmin, xmax)  # keep full-width lines
 
-    # Legend by Output
-    legend_handles = [Patch(facecolor=color_map[o], label=o) for o in outputs]
+    # ---- Optional 'today' line
+    if show_today:
+        today = date.today()
+        ax.axvline(today, color="#666", linewidth=1.1, alpha=0.8)
+        ax.text(today, ax.get_ylim()[0] - 0.25, "Today", rotation=90,
+                va="top", ha="center", fontsize=8, color="#666")
+
+    # ---- Legend (bottom center), tidy spacing
+    handles = [Patch(facecolor=color_map[o], label=o) for o in ordered_outputs]
     ax.legend(
-        handles=legend_handles,
+        handles=handles,
         title="Outputs",
         loc="upper center",
-        bbox_to_anchor=(0.5, -0.30),  # center, below the axes
-        ncol=len(outputs),  # spread items in one row
-        frameon=False
+        bbox_to_anchor=(0.2, -0.30),
+        ncol=2,  # wrap if many outputs
+        # ncol=min(len(handles), 4),  # wrap if many outputs
+        frameon=False,
+        handlelength=1.8,
+        columnspacing=1.4,
+        handletextpad=0.6,
+        borderaxespad=0.0,
     )
 
 def select_output_id(label, current_id, key):
@@ -1554,15 +1594,14 @@ with tabs[3]:
 
     # ------- Gantt (web) -------
     df_g = _workplan_df()
-    df_g = _workplan_df()
     with st.expander("📈 Gantt chart (Workplan)", expanded=bool(len(df_g))):
         if df_g.empty:
             st.info("Add activities with start & end dates to see the Gantt.")
         else:
             height = min(1.2 + 0.35 * len(df_g), 12)
             fig, ax = plt.subplots(figsize=(11, height))
-            _draw_gantt(ax, df_g)
-            fig.tight_layout()
+            _draw_gantt(ax, df_g, show_today=False)
+            fig.subplots_adjust(left=0.26, right=0.98, top=0.96, bottom=0.30)
             st.pyplot(fig, clear_figure=True, use_container_width=True)
 
     # --- Card view (optional: put this below or instead of the table) ---
@@ -1763,7 +1802,7 @@ with tabs[4]:
 
 # ===== TAB 6: Export =====
 tabs[5].header("📤 Export Your Application")
-if tabs[5].button("Generate Excel File"):
+if tabs[5].button("Generate Excel Backup File"):
     wb = Workbook()
     if "Sheet" in wb.sheetnames:
         wb.remove(wb["Sheet"])
@@ -1929,7 +1968,7 @@ if tabs[5].button("Generate Excel File"):
     )
 
 # --- Word export (Logframe as table)
-if tabs[5].button("Generate Word Logframe"):
+if tabs[5].button("Generate Word Document"):
     try:
         word_buf = build_logframe_docx()
         proj_title = (st.session_state.get("id_info", {}) or {}).get("title", "") or "Project"
