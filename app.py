@@ -388,6 +388,43 @@ def view_logframe_element(inner_html: str, kind: str = "output") -> str:
     """Wrap inner HTML in a styled card. kind: 'output' | 'kpi' (or others later)."""
     return f"<div class='lf-card lf-card--{kind}'>{inner_html}</div>"
 
+def sync_disbursement_from_kpis():
+    """
+    Keep st.session_state.disbursement in sync with KPIs:
+    - rows only for KPIs with linked_payment == True
+    - preserve user-entered anticipated_date and amount_aed
+    - refresh output_id and kpi_name from KPI
+    """
+    pay_kpis = [k for k in st.session_state.kpis if bool(k.get("linked_payment"))]
+
+    # maps for easy lookup
+    by_id = {d.get("kpi_id"): d for d in st.session_state.disbursement}
+    keep_ids = set()
+
+    # 1) Add/update rows for all payment-linked KPIs
+    for k in pay_kpis:
+        kid = k["id"]
+        row = by_id.get(kid)
+        if row is None:
+            # new row with best-guess date; user may change later
+            st.session_state.disbursement.append({
+                "kpi_id": kid,
+                "output_id": k.get("parent_id"),
+                "kpi_name": k.get("name", ""),
+                "anticipated_date": k.get("end_date") or k.get("start_date") or None,
+                "deliverable": k.get("name", ""),  # keep for Excel; Word ignores output prefix anyway
+                "amount_aed": 0.0,
+            })
+        else:
+            # refresh fields that must mirror KPIs (non-editable in tab)
+            row["output_id"] = k.get("parent_id")
+            row["kpi_name"]  = k.get("name", "")
+            # keep user's date/amount as-is
+        keep_ids.add(kid)
+
+    # 2) Remove rows whose KPI is no longer payment-linked
+    st.session_state.disbursement = [d for d in st.session_state.disbursement if d.get("kpi_id") in keep_ids]
+
 def build_logframe_docx():
     # Lazy import so app loads even if package is missing
     try:
@@ -444,6 +481,27 @@ def build_logframe_docx():
         run.font.size = Pt(11)
         return run
 
+    def _new_landscape_section(title):
+        sec = doc.add_section(WD_SECTION_START.NEW_PAGE)
+        sec.orientation = WD_ORIENT.LANDSCAPE
+        # swap page size
+        sec.page_width, sec.page_height = sec.page_height, sec.page_width
+        _h1(title)
+        return sec
+
+    def _ensure_portrait_section(title):
+        sec = doc.add_section(WD_SECTION_START.NEW_PAGE)
+        sec.orientation = WD_ORIENT.PORTRAIT
+        # ensure portrait proportions
+        if sec.page_width > sec.page_height:
+            sec.page_width, sec.page_height = sec.page_height, sec.page_width
+        _h1(title)
+        return sec
+
+    def _content_width_cm(sec):
+        # use .cm to avoid manual EMU conversion
+        return sec.page_width.cm - sec.left_margin.cm - sec.right_margin.cm
+
     def _h1(text):
         p = doc.add_paragraph(text)
         p.style = doc.styles['Heading 1']
@@ -466,9 +524,10 @@ def build_logframe_docx():
         fig, ax = plt.subplots(figsize=(11, h))
         _draw_gantt(ax, df, show_today=False)
         # extra space for legend + rotated ticks
-        fig.subplots_adjust(left=0.26, right=0.98, top=0.96, bottom=0.34)
+        fig.subplots_adjust(left=0.30, right=0.995, top=0.96, bottom=0.36)
         buf = BytesIO()
-        fig.savefig(buf, format="png", dpi=220)  # slightly higher DPI for Word
+        # 'tight' ensures nothing gets cut off (legend, labels)
+        fig.savefig(buf, format="png", dpi=220, bbox_inches="tight")
         plt.close(fig)
         buf.seek(0)
         return buf
@@ -680,7 +739,7 @@ def build_logframe_docx():
         if name:
             name_to_num[name] = num
 
-    # Group activities by Output name and render rows with merged output cells
+    # Group activities by Output (ordered by logframe numbering), render with merged output cells
     if df_wp.empty:
         row = t_act.add_row()
         _set_cell_text(row.cells[0], "—")
@@ -688,45 +747,54 @@ def build_logframe_docx():
         _set_cell_text(row.cells[2], "—")
         _set_cell_text(row.cells[3], "—")
     else:
-        # keep the same stable order as the app: Output -> Start -> Activity
-        df_wp = df_wp.sort_values(["Output", "Start", "Activity"], kind="stable").reset_index(drop=True)
+        # 1) Stable within-group order: Start -> Activity
+        df_wp = df_wp.sort_values(["Start", "Activity"], kind="stable").reset_index(drop=True)
 
-        for out_name, sub in df_wp.groupby("Output", sort=False):
-            # rows for this output
-            start_row = len(t_act.rows)  # first data row index for this output
+        # 2) Deterministic group order: by Output number (from logframe)
+        def _out_order(name):
+            n = name_to_num.get(name, "")
+            try:
+                return int(n)
+            except Exception:
+                return 10 ** 9  # push unknowns to the end
+
+        ordered_outputs = sorted(df_wp["Output"].unique().tolist(), key=_out_order)
+
+        for out_name in ordered_outputs:
+            sub = df_wp.loc[df_wp["Output"] == out_name]
+
+            start_row = len(t_act.rows)
             for _, r in sub.iterrows():
                 row = t_act.add_row()
                 # keep widths on the new row
                 for i, w in enumerate(COLW):
                     row.cells[i].width = w
-
-                # Output cell text is filled later (after merge)
+                # fill activity row
                 _set_cell_text(row.cells[1], str(r["Activity"]))
                 _set_cell_text(row.cells[2], r["Start"].strftime("%d/%b/%Y"))
                 _set_cell_text(row.cells[3], r["End"].strftime("%d/%b/%Y"))
 
-            end_row = len(t_act.rows) - 1  # last data row for this output
+            end_row = len(t_act.rows) - 1
             if end_row >= start_row:
-                # Merge the first column for this output group
                 merged = t_act.cell(start_row, 0).merge(t_act.cell(end_row, 0))
-                # Numbered label: "Output N — Name"
                 label = f"Output {name_to_num.get(out_name, '')} — {out_name}".strip(" —")
                 _set_cell_text(merged, label)
 
     doc.add_paragraph("")  # a small gap after the table
 
-    # ===== WORKPLAN – Gantt image =====
+    # ===== WORKPLAN – Gantt (LANDSCAPE section) =====
     try:
         gantt_buf = _gantt_png_buf()
         if gantt_buf:
+            sec_land = _new_landscape_section("WORKPLAN – Gantt")
             from docx.shared import Cm
-            doc.add_picture(gantt_buf, width=Cm(16))  # fit content width
+            width_cm = _content_width_cm(sec_land)
+            doc.add_picture(gantt_buf, width=Cm(max(1.0, width_cm - 0.5)))  # 0.5 cm safety
     except Exception:
-        # If matplotlib not available at runtime, do not fail the export
         pass
 
     # ===== DISBURSEMENT SCHEDULE =====
-    _new_section("DISBURSEMENT SCHEDULE")
+    _ensure_portrait_section("DISBURSEMENT SCHEDULE")
 
     from datetime import date as _date
     # Use saved disbursement rows (leave empty -> no rows)
@@ -783,7 +851,7 @@ def build_logframe_docx():
         _set_cell_text(r.cells[2], "")
 
     # ===== BUDGET =====
-    _new_section("BUDGET")
+    _ensure_portrait_section("BUDGET")
 
     bt = doc.add_table(rows=1, cols=6); bt.style = "Table Grid"; bt.alignment = WD_TABLE_ALIGNMENT.LEFT
     bh = bt.rows[0]
@@ -2013,54 +2081,36 @@ with tabs[4]:
 with tabs[5]:
     st.header("💸 Disbursement Schedule")
 
-    # Build the list of payment-linked KPIs
-    pay_kpis = [k for k in st.session_state.kpis if bool(k.get("linked_payment"))]
-    id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
+    # Keep this table derived from KPIs (add/update/remove) while preserving date/amount
+    sync_disbursement_from_kpis()
 
-    # Ensure we have a unique row per KPI in disbursement state (idempotent)
-    existing_ids = {d.get("kpi_id") for d in st.session_state.disbursement}
-    for k in pay_kpis:
-        if k["id"] not in existing_ids:
-            st.session_state.disbursement.append({
-                "kpi_id": k["id"],
-                "output_id": k.get("parent_id"),
-                "kpi_name": k.get("name",""),
-                "anticipated_date": k.get("end_date") or k.get("start_date") or None,  # best guess; user can change
-                "deliverable": k.get("name",""),
-                "amount_aed": 0.0
-            })
-
-    # Render editable rows
     if not st.session_state.disbursement:
         st.info("No KPIs are marked as **Linked to Payment** in the Logframe.")
     else:
-        # Sort by Output label, then KPI name
+        out_nums, _ = compute_numbers()
+        id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
+
         def _out_label(d):
-            # number the output like elsewhere
-            out_nums, _ = compute_numbers()
             n = out_nums.get(d.get("output_id",""), "")
             return f"{n} | {id_to_output.get(d.get('output_id'), '(unassigned)')}"
-        st.caption("Enter the date, deliverable text, and the amount (AED) for each payment-linked KPI:")
-        for i, row in enumerate(sorted(st.session_state.disbursement, key=lambda x: (_out_label(x), x.get("kpi_name","")))):
-            with st.container():
-                c1, c2, c3, c4 = st.columns([0.25, 0.35, 0.20, 0.20])
-                c1.text_input("Output", value=_out_label(row), key=f"dsp_out_{row['kpi_id']}", disabled=True)
-                c2.text_input("KPI / Deliverable", value=row.get("kpi_name") or row.get("deliverable",""),
-                              key=f"dsp_deliv_{row['kpi_id']}")
-                c3.date_input("Anticipated date", value=row.get("anticipated_date"),
-                              key=f"dsp_date_{row['kpi_id']}")
-                c4.number_input("Amount (AED)", min_value=0.0, value=float(row.get("amount_aed") or 0.0),
-                                step=1000.0, key=f"dsp_amt_{row['kpi_id']}")
 
-        # Persist edited values back
-        if st.button("💾 Save schedule"):
-            # rebuild in original order, updating fields
-            by_id = {d["kpi_id"]: d for d in st.session_state.disbursement}
-            for d in list(st.session_state.disbursement):
-                d["deliverable"]      = st.session_state.get(f"dsp_deliv_{d['kpi_id']}", d.get("deliverable"))
-                d["anticipated_date"] = st.session_state.get(f"dsp_date_{d['kpi_id']}", d.get("anticipated_date"))
-                d["amount_aed"]       = float(st.session_state.get(f"dsp_amt_{d['kpi_id']}", d.get("amount_aed") or 0))
-            st.success("Disbursement schedule saved.")
+        st.caption("Enter the anticipated date and the amount (AED). The **Linked-KPI** comes from the Logframe and is not editable here.")
+        # Render (sorted for stability)
+        for row in sorted(st.session_state.disbursement, key=lambda x: (_out_label(x), x.get("kpi_name",""))):
+            kpid = row["kpi_id"]
+            with st.container():
+                # Output label (disabled), Linked-KPI (disabled), Date (editable), Amount (editable)
+                c1, c2, c3, c4 = st.columns([0.25, 0.35, 0.20, 0.20])
+                c1.text_input("Output", value=_out_label(row), key=f"dsp_out_{kpid}", disabled=True)
+                # make Linked-KPI explicitly read-only and visually greyed out
+                c2.text_input("Linked-KPI", value=row.get("kpi_name",""), key=f"dsp_kpi_{kpid}", disabled=True)
+                new_date = c3.date_input("Anticipated date", value=row.get("anticipated_date"), key=f"dsp_date_{kpid}")
+                new_amt  = c4.number_input("Amount (AED)", min_value=0.0, value=float(row.get("amount_aed") or 0.0),
+                                           step=1000.0, key=f"dsp_amt_{kpid}")
+
+                # Persist only editable fields (date, amount)
+                row["anticipated_date"] = new_date
+                row["amount_aed"] = float(new_amt)
 
 # ===== TAB 7: Export =====
 tabs[6].header("📤 Export Your Application")
@@ -2292,6 +2342,6 @@ if tabs[6].button("Generate Word Document"):
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
     except ModuleNotFoundError:
-        tabs[5].error("`python-docx` is required. Install it with: pip install python-docx")
+        tabs[6].error("`python-docx` is required. Install it with: pip install python-docx")
     except Exception as e:
-        tabs[5].error(f"Could not generate the Word Document: {e}")
+        tabs[6].error(f"Could not generate the Word Document: {e}")
