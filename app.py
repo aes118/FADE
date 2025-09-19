@@ -34,7 +34,7 @@ def generate_id():
     return str(uuid.uuid4())[:8]
 
 # app state
-for key in ["impacts", "outcomes", "outputs", "kpis", "workplan", "budget"]:
+for key in ["impacts", "outcomes", "outputs", "kpis", "workplan", "budget", "disbursement"]:
     if key not in st.session_state:
         st.session_state[key] = []
 
@@ -725,6 +725,98 @@ def build_logframe_docx():
         # If matplotlib not available at runtime, do not fail the export
         pass
 
+    # ===== DISBURSEMENT SCHEDULE =====
+    _new_section("DISBURSEMENT SCHEDULE")
+
+    from datetime import date as _date
+    # Use saved disbursement rows (leave empty -> no rows)
+    dsp_src = list(st.session_state.get("disbursement", []))
+
+    # Sort consistently: by output label (for stability), then date, then deliverable text
+    out_nums, _ = compute_numbers()
+    id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
+
+    def _out_label(oid):  # only for stable sort; NOT shown in table
+        return f"Output {out_nums.get(oid, '')} — {id_to_output.get(oid, '(unassigned)')}".strip(" —")
+
+    dsp_rows = sorted(
+        dsp_src,
+        key=lambda d: (_out_label(d.get("output_id")),
+                       d.get("anticipated_date") or _date(2100, 1, 1),
+                       (d.get("deliverable") or d.get("kpi_name") or ""))
+    )
+
+    # Table: SAME style as other tables (no title row, no milestone id col)
+    t = doc.add_table(rows=1, cols=3)
+    t.style = "Table Grid"
+    t.alignment = WD_TABLE_ALIGNMENT.LEFT
+
+    # Header row (PRIMARY_SHADE + white)
+    hdr = t.rows[0]
+    headers = (
+        "Anticipated deliverable date",
+        "Deliverable",
+        "Maximum Grant instalment payable on satisfaction of this deliverable (AED)",
+    )
+    for i, lab in enumerate(headers):
+        _set_cell_text(hdr.cells[i], lab, bold=True, white=True)
+        _shade(hdr.cells[i], PRIMARY_SHADE)
+    _repeat_header(hdr)
+
+    # Column widths
+    for i, w in enumerate((Cm(5.0), Cm(12.0), Cm(5.0))):
+        for r in t.rows:
+            r.cells[i].width = w
+        t.columns[i].width = w
+
+    # Data rows (Deliverable = KPI title only; do NOT prepend Output)
+    if dsp_rows:
+        for d in dsp_rows:
+            r = t.add_row()
+            _set_cell_text(r.cells[0], d["anticipated_date"].strftime("%d/%b/%Y") if d.get("anticipated_date") else "")
+            _set_cell_text(r.cells[1], (d.get("deliverable") or d.get("kpi_name") or ""))
+            _set_cell_text(r.cells[2], f"{float(d.get('amount_aed') or 0.0):,.2f}")
+    else:
+        r = t.add_row()
+        _set_cell_text(r.cells[0], "")
+        _set_cell_text(r.cells[1], "No disbursements defined.")
+        _set_cell_text(r.cells[2], "")
+
+    # ===== BUDGET =====
+    _new_section("BUDGET")
+
+    bt = doc.add_table(rows=1, cols=6); bt.style = "Table Grid"; bt.alignment = WD_TABLE_ALIGNMENT.LEFT
+    bh = bt.rows[0]
+    for i, lab in enumerate(("Output", "Item", "Category", "Unit", "Qty", "Total (AED)")):
+        _set_cell_text(bh.cells[i], lab, bold=True, white=True)
+        _shade(bh.cells[i], PRIMARY_SHADE)
+    _repeat_header(bh)
+
+    for i, w in enumerate((Cm(6.0), Cm(7.0), Cm(3.5), Cm(2.5), Cm(2.5), Cm(3.5))):
+        for r in bt.rows: r.cells[i].width = w
+        bt.columns[i].width = w
+
+    id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
+    out_nums, _ = compute_numbers()
+
+    def _outnum(oid): return out_nums.get(oid, "9999")
+    total_budget = 0.0
+
+    for r in sorted(st.session_state.get("budget", []), key=lambda x: _outnum(x[0])):
+        out_id, item, cat, unit, qty, uc, curr, tot, blid = _budget_unpack(r)
+        total_budget += float(tot or 0.0)
+        row = bt.add_row()
+        _set_cell_text(row.cells[0], f"Output {_outnum(out_id)} — {id_to_output.get(out_id,'')}")
+        _set_cell_text(row.cells[1], item or "")
+        _set_cell_text(row.cells[2], cat or "")
+        _set_cell_text(row.cells[3], unit or "")
+        _set_cell_text(row.cells[4], f"{qty:g}")
+        _set_cell_text(row.cells[5], f"{tot:,.2f}")
+
+    # total line (right aligned)
+    p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    run = p.add_run(f"Total budget: {total_budget:,.2f} AED"); run.bold = True
+
     # ---- Save to buffer
     buf = BytesIO()
     doc.save(buf)
@@ -961,6 +1053,7 @@ tabs = st.tabs([
     "🧱 Logframe",
     "🗂️ Workplan",
     "💵 Budget",
+    "💸 Disbursement Schedule",
     "📤 Export"
 ])
 
@@ -1916,10 +2009,62 @@ with tabs[4]:
     # Grand total at the bottom
     st.markdown(f"<div class='lf-grandtotal'>Total: {fmt_money(grand_total)}</div>", unsafe_allow_html=True)
 
+# ===== TAB 6: Disbursement Schedule =====
+with tabs[5]:
+    st.header("💸 Disbursement Schedule")
 
-# ===== TAB 6: Export =====
-tabs[5].header("📤 Export Your Application")
-if tabs[5].button("Generate Excel Backup File"):
+    # Build the list of payment-linked KPIs
+    pay_kpis = [k for k in st.session_state.kpis if bool(k.get("linked_payment"))]
+    id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
+
+    # Ensure we have a unique row per KPI in disbursement state (idempotent)
+    existing_ids = {d.get("kpi_id") for d in st.session_state.disbursement}
+    for k in pay_kpis:
+        if k["id"] not in existing_ids:
+            st.session_state.disbursement.append({
+                "kpi_id": k["id"],
+                "output_id": k.get("parent_id"),
+                "kpi_name": k.get("name",""),
+                "anticipated_date": k.get("end_date") or k.get("start_date") or None,  # best guess; user can change
+                "deliverable": k.get("name",""),
+                "amount_aed": 0.0
+            })
+
+    # Render editable rows
+    if not st.session_state.disbursement:
+        st.info("No KPIs are marked as **Linked to Payment** in the Logframe.")
+    else:
+        # Sort by Output label, then KPI name
+        def _out_label(d):
+            # number the output like elsewhere
+            out_nums, _ = compute_numbers()
+            n = out_nums.get(d.get("output_id",""), "")
+            return f"{n} | {id_to_output.get(d.get('output_id'), '(unassigned)')}"
+        st.caption("Enter the date, deliverable text, and the amount (AED) for each payment-linked KPI:")
+        for i, row in enumerate(sorted(st.session_state.disbursement, key=lambda x: (_out_label(x), x.get("kpi_name","")))):
+            with st.container():
+                c1, c2, c3, c4 = st.columns([0.25, 0.35, 0.20, 0.20])
+                c1.text_input("Output", value=_out_label(row), key=f"dsp_out_{row['kpi_id']}", disabled=True)
+                c2.text_input("KPI / Deliverable", value=row.get("kpi_name") or row.get("deliverable",""),
+                              key=f"dsp_deliv_{row['kpi_id']}")
+                c3.date_input("Anticipated date", value=row.get("anticipated_date"),
+                              key=f"dsp_date_{row['kpi_id']}")
+                c4.number_input("Amount (AED)", min_value=0.0, value=float(row.get("amount_aed") or 0.0),
+                                step=1000.0, key=f"dsp_amt_{row['kpi_id']}")
+
+        # Persist edited values back
+        if st.button("💾 Save schedule"):
+            # rebuild in original order, updating fields
+            by_id = {d["kpi_id"]: d for d in st.session_state.disbursement}
+            for d in list(st.session_state.disbursement):
+                d["deliverable"]      = st.session_state.get(f"dsp_deliv_{d['kpi_id']}", d.get("deliverable"))
+                d["anticipated_date"] = st.session_state.get(f"dsp_date_{d['kpi_id']}", d.get("anticipated_date"))
+                d["amount_aed"]       = float(st.session_state.get(f"dsp_amt_{d['kpi_id']}", d.get("amount_aed") or 0))
+            st.success("Disbursement schedule saved.")
+
+# ===== TAB 7: Export =====
+tabs[6].header("📤 Export Your Application")
+if tabs[6].button("Generate Excel Backup File"):
     wb = Workbook()
     if "Sheet" in wb.sheetnames:
         wb.remove(wb["Sheet"])
@@ -2074,10 +2219,60 @@ if tabs[5].button("Generate Excel Backup File"):
         row[7].number_format = '#,##0.00'  # Unit Cost (col 8)
         row[9].number_format = '#,##0.00'  # Total (col 10)
 
+    # --- Disbursement Schedule (export) ---
+    wsd = wb.create_sheet("Disbursement Schedule")
+    wsd.append([
+        "Milestone ID",
+        "Anticipated deliverable date",
+        "Deliverable",
+        "Maximum Grant instalment payable on satisfaction of this deliverable (AED)"
+    ])
+
+    out_nums, _ = compute_numbers()
+    id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
+
+
+    def _out_label(oid):
+        return f"Output {out_nums.get(oid, '')} — {id_to_output.get(oid, '(unassigned)')}".strip(" —")
+
+
+    # Source rows: prefer saved schedule; if empty, fall back to payment-linked KPIs with blanks
+    from datetime import date as _date
+
+    src = list(st.session_state.get("disbursement", [])) or [
+        {
+            "kpi_id": k["id"],
+            "output_id": k.get("parent_id"),
+            "anticipated_date": k.get("end_date") or k.get("start_date") or None,
+            "deliverable": k.get("name", ""),
+            "amount_aed": 0.0,
+        }
+        for k in st.session_state.kpis if bool(k.get("linked_payment"))
+    ]
+
+    rows = sorted(
+        src,
+        key=lambda d: (_out_label(d.get("output_id")), d.get("anticipated_date") or _date(2100, 1, 1),
+                       d.get("deliverable") or "")
+    )
+
+    for idx, d in enumerate(rows, start=1):
+        ms_id = f"MS-{idx:03d}"
+        wsd.append([
+            ms_id,
+            fmt_dd_mmm_yyyy(d.get("anticipated_date")),
+            (d.get("deliverable") or ""),
+            float(d.get("amount_aed") or 0.0),
+        ])
+
+    # Number format for the amount column (col D)
+    for r in wsd.iter_rows(min_row=2):
+        r[3].number_format = '#,##0.00'
+
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)
-    tabs[5].download_button(
+    tabs[6].download_button(
         "📥 Download Excel File",
         data=buf,
         file_name="Application_Submission.xlsx",
@@ -2085,12 +2280,12 @@ if tabs[5].button("Generate Excel Backup File"):
     )
 
 # --- Word export (Logframe as table)
-if tabs[5].button("Generate Word Document"):
+if tabs[6].button("Generate Word Document"):
     try:
         word_buf = build_logframe_docx()
         proj_title = (st.session_state.get("id_info", {}) or {}).get("title", "") or "Project"
         safe = re.sub(r"[^A-Za-z0-9]+", "_", proj_title).strip("_") or "Project"
-        tabs[5].download_button(
+        tabs[6].download_button(
             "📥 Download Word Document",
             data=word_buf,
             file_name=f"Logframe_{safe}.docx",
