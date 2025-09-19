@@ -155,6 +155,21 @@ def compute_numbers(include_activities: bool = False):
                 q += 1
     return out_num, kpi_num, act_num
 
+def select_output_id(label, current_id, key):
+    """Select an Output and return its ID (options are IDs; stable + clean)."""
+    outs = st.session_state.get("outputs", [])
+    out_nums, _ = compute_numbers()
+    id_to_name = {o["id"]: (o.get("name") or "Output") for o in outs}
+    options = [o["id"] for o in outs]
+    idx = options.index(current_id) if current_id in options else 0
+    return st.selectbox(
+        label,
+        options,
+        index=idx if options else 0,
+        format_func=lambda oid: f"Output {out_nums.get(oid,'?')} — {id_to_name.get(oid,'Output')}",
+        key=key,
+    )
+
 def strip_label_prefix(text: str, kind: str) -> str:
     """
     Remove labels like 'Activity 1.2 — ' or 'KPI 1.2.3: ' from a string.
@@ -1386,7 +1401,9 @@ with tabs[2]:
                             item=k, list_name="kpis", edit_flag_key="edit_kpi",
                             view_md_func=view_kpi,
                             fields=[
-                                ("name", st.text_area, "KPI"),
+                                ("parent_id",
+                                 lambda label, value, key: select_output_id(label, value, key),
+                                 "Linked Output"),                                ("name", st.text_area, "KPI"),
                                 ("baseline", st.text_input, "Baseline"),
                                 ("target", st.text_input, "Target"),
                                 ("linked_payment",
@@ -1464,6 +1481,7 @@ with tabs[3]:
                 if st.session_state.get("edit_activity") == a["id"]:
                     e1, e2, e3 = st.columns([0.90, 0.05, 0.05])
                     with e1:
+                        new_output_id = select_output_id("Linked Output", a.get("output_id"), f"a_out_{a['id']}")
                         new_name = st.text_input("Activity", value=a.get("name", ""), key=f"a_name_{a['id']}")
                         new_owner = st.text_input("Owner", value=a.get("owner", ""), key=f"a_owner_{a['id']}")
                         cA, cB = st.columns(2)
@@ -1475,6 +1493,7 @@ with tabs[3]:
                         idx = _find_by_id(st.session_state.workplan, a["id"])
                         if idx is not None:
                             st.session_state.workplan[idx].update({
+                                "output_id": new_output_id,
                                 "name": new_name.strip(),
                                 "owner": new_owner.strip(),
                                 "start": new_start,
