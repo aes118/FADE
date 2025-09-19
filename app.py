@@ -394,35 +394,44 @@ def sync_disbursement_from_kpis():
     - rows only for KPIs with linked_payment == True
     - preserve user-entered anticipated_date and amount_aed
     - refresh output_id and kpi_name from KPI
+    - if date is missing, prefill with latest linked Activity end, else KPI end, else KPI start
     """
     pay_kpis = [k for k in st.session_state.kpis if bool(k.get("linked_payment"))]
-
-    # maps for easy lookup
     by_id = {d.get("kpi_id"): d for d in st.session_state.disbursement}
     keep_ids = set()
 
-    # 1) Add/update rows for all payment-linked KPIs
+    # helper: latest activity end for a KPI
+    def latest_activity_end(kpi_id):
+        dates = []
+        for a in st.session_state.get("workplan", []):
+            if kpi_id in (a.get("kpi_ids") or []):
+                if a.get("end"):
+                    dates.append(a["end"])
+        return max(dates) if dates else None
+
     for k in pay_kpis:
         kid = k["id"]
         row = by_id.get(kid)
+        lae = latest_activity_end(kid)
         if row is None:
-            # new row with best-guess date; user may change later
             st.session_state.disbursement.append({
                 "kpi_id": kid,
                 "output_id": k.get("parent_id"),
                 "kpi_name": k.get("name", ""),
-                "anticipated_date": k.get("end_date") or k.get("start_date") or None,
-                "deliverable": k.get("name", ""),  # keep for Excel; Word ignores output prefix anyway
+                "anticipated_date": lae or k.get("end_date") or k.get("start_date") or None,
+                "deliverable": k.get("name", ""),
                 "amount_aed": 0.0,
             })
         else:
-            # refresh fields that must mirror KPIs (non-editable in tab)
+            # refresh mirror fields
             row["output_id"] = k.get("parent_id")
             row["kpi_name"]  = k.get("name", "")
-            # keep user's date/amount as-is
+            # if user hasn't chosen a date yet, backfill one
+            if not row.get("anticipated_date"):
+                row["anticipated_date"] = lae or k.get("end_date") or k.get("start_date") or None
         keep_ids.add(kid)
 
-    # 2) Remove rows whose KPI is no longer payment-linked
+    # remove rows for KPIs no longer payment-linked
     st.session_state.disbursement = [d for d in st.session_state.disbursement if d.get("kpi_id") in keep_ids]
 
 def build_logframe_docx():
@@ -807,11 +816,23 @@ def build_logframe_docx():
     def _out_label(oid):  # only for stable sort; NOT shown in table
         return f"Output {out_nums.get(oid, '')} — {id_to_output.get(oid, '(unassigned)')}".strip(" —")
 
+    # Sort primarily by date (earliest first), then by Output number, then by KPI title
+    out_nums, _ = compute_numbers()
+
+    def _out_num_val(oid):
+        n = out_nums.get(oid, "")
+        try:
+            return int(n)
+        except Exception:
+            return 10 ** 9  # push unknown/unnumbered outputs to the end
+
     dsp_rows = sorted(
         dsp_src,
-        key=lambda d: (_out_label(d.get("output_id")),
-                       d.get("anticipated_date") or _date(2100, 1, 1),
-                       (d.get("deliverable") or d.get("kpi_name") or ""))
+        key=lambda d: (
+            d.get("anticipated_date") or _date(2100, 1, 1),  # 1) date
+            _out_num_val(d.get("output_id")),  # 2) output number (not shown)
+            (d.get("kpi_name") or d.get("deliverable") or "").strip()  # 3) KPI title
+        )
     )
 
     # Table: SAME style as other tables (no title row, no milestone id col)
@@ -1335,6 +1356,29 @@ if uploaded_file is not None:
 
                 if imported:
                     st.session_state.budget = imported
+
+            # ---- Disbursement Schedule import (optional sheet)
+            if "Disbursement Schedule" in xls.sheet_names:
+                ddf = pd.read_excel(xls, sheet_name="Disbursement Schedule")
+                ddf.columns = [str(c).strip() for c in ddf.columns]
+
+                st.session_state.disbursement = []
+
+                k_by_id = {k["id"]: k for k in st.session_state.kpis}
+
+                for _, row in ddf.iterrows():
+                    kid = _s(row.get("KPIID"))
+                    k = k_by_id.get(kid)
+
+                    st.session_state.disbursement.append({
+                        "kpi_id": kid,
+                        "output_id": (k.get("parent_id") if k else None),
+                        "kpi_name": (k.get("name") if k else ""),
+                        "anticipated_date": parse_date_like(row.get("Anticipated deliverable date")),
+                        "deliverable": _s(row.get("Deliverable")),
+                        "amount_aed": float(row.get(
+                            "Maximum Grant instalment payable on satisfaction of this deliverable (AED)") or 0.0),
+                    })
 
             # --- Import Identification sheet (if present) and update ID page state ---
             if "Identification" in xls.sheet_names:
@@ -2272,21 +2316,12 @@ if tabs[6].button("Generate Excel Backup File"):
     # --- Disbursement Schedule (export) ---
     wsd = wb.create_sheet("Disbursement Schedule")
     wsd.append([
-        "Milestone ID",
+        "KPIID",  # machine id for mapping back
         "Anticipated deliverable date",
         "Deliverable",
         "Maximum Grant instalment payable on satisfaction of this deliverable (AED)"
     ])
 
-    out_nums, _ = compute_numbers()
-    id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
-
-
-    def _out_label(oid):
-        return f"Output {out_nums.get(oid, '')} — {id_to_output.get(oid, '(unassigned)')}".strip(" —")
-
-
-    # Source rows: prefer saved schedule; if empty, fall back to payment-linked KPIs with blanks
     from datetime import date as _date
 
     src = list(st.session_state.get("disbursement", [])) or [
@@ -2302,21 +2337,22 @@ if tabs[6].button("Generate Excel Backup File"):
 
     rows = sorted(
         src,
-        key=lambda d: (_out_label(d.get("output_id")), d.get("anticipated_date") or _date(2100, 1, 1),
+        key=lambda d: (d.get("output_id"), d.get("anticipated_date") or _date(2100, 1, 1),
                        d.get("deliverable") or "")
     )
 
-    for idx, d in enumerate(rows, start=1):
-        ms_id = f"MS-{idx:03d}"
+    for d in rows:
+        # write actual date object; openpyxl will store a true Excel date
         wsd.append([
-            ms_id,
-            fmt_dd_mmm_yyyy(d.get("anticipated_date")),
+            d.get("kpi_id") or "",
+            d.get("anticipated_date") or None,  # <-- date, not string
             (d.get("deliverable") or ""),
             float(d.get("amount_aed") or 0.0),
         ])
 
-    # Number format for the amount column (col D)
+    # Number formats: Date (col B) and Amount (col D)
     for r in wsd.iter_rows(min_row=2):
+        r[1].number_format = 'DD/mmm/YYYY'  # e.g., 01/Oct/2025
         r[3].number_format = '#,##0.00'
 
     buf = BytesIO()
