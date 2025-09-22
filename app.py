@@ -33,6 +33,8 @@ def _s(v):
 def generate_id():
     return str(uuid.uuid4())[:8]
 
+footer_note = "Note: All monetary values are in USD and will be converted to AED in the official project agreement."
+
 # app state
 for key in ["impacts", "outcomes", "outputs", "kpis", "workplan", "budget", "disbursement"]:
     if key not in st.session_state:
@@ -392,7 +394,7 @@ def sync_disbursement_from_kpis():
     """
     Keep st.session_state.disbursement in sync with KPIs:
     - rows only for KPIs with linked_payment == True
-    - preserve user-entered anticipated_date and amount_aed
+    - preserve user-entered anticipated_date and amount_usd
     - refresh output_id and kpi_name from KPI
     - if date is missing, prefill with latest linked Activity end, else KPI end, else KPI start
     """
@@ -420,7 +422,7 @@ def sync_disbursement_from_kpis():
                 "kpi_name": k.get("name", ""),
                 "anticipated_date": lae or k.get("end_date") or k.get("start_date") or None,
                 "deliverable": k.get("name", ""),
-                "amount_aed": 0.0,
+                "amount_usd": 0.0,
             })
         else:
             # refresh mirror fields
@@ -802,6 +804,48 @@ def build_logframe_docx():
     except Exception:
         pass
 
+    # ===== BUDGET =====
+    _ensure_portrait_section("BUDGET")
+
+    # Three-column budget table: Budget item | Description | Total Cost (USD)
+    bt = doc.add_table(rows=1, cols=3)
+    bt.style = "Table Grid"
+    bt.alignment = WD_TABLE_ALIGNMENT.LEFT
+
+    bh = bt.rows[0]
+    for i, lab in enumerate(("Budget item", "Description", "Total Cost (USD)")):
+        _set_cell_text(bh.cells[i], lab, bold=True, white=True)
+        _shade(bh.cells[i], PRIMARY_SHADE)
+    _repeat_header(bh)
+
+    from docx.shared import Cm
+    for i, w in enumerate((Cm(6.0), Cm(11.0), Cm(4.0))):
+        for r in bt.rows:
+            r.cells[i].width = w
+        bt.columns[i].width = w
+
+    total_budget = 0.0
+    for r in st.session_state.get("budget", []):
+        row = bt.add_row()
+        _set_cell_text(row.cells[0], r.get("item", ""))
+        _set_cell_text(row.cells[1], r.get("description", ""))
+        amt = float(r.get("total_usd") or 0.0)
+        total_budget += amt
+        _set_cell_text(row.cells[2], f"USD {amt:,.2f}")
+
+    # Total line
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    run = p.add_run(f"Total budget: USD {total_budget:,.2f}")
+    run.bold = True
+
+    # USD→AED note under the budget table
+    note = doc.add_paragraph()
+    note_run = note.add_run(
+        footer_note
+    )
+    note_run.italic = True
+
     # ===== DISBURSEMENT SCHEDULE =====
     _ensure_portrait_section("DISBURSEMENT SCHEDULE")
 
@@ -845,7 +889,7 @@ def build_logframe_docx():
     headers = (
         "Anticipated deliverable date",
         "Deliverable",
-        "Maximum Grant instalment payable on satisfaction of this deliverable (AED)",
+        "Maximum Grant instalment payable on satisfaction of this deliverable (USD)",
     )
     for i, lab in enumerate(headers):
         _set_cell_text(hdr.cells[i], lab, bold=True, white=True)
@@ -864,47 +908,19 @@ def build_logframe_docx():
             r = t.add_row()
             _set_cell_text(r.cells[0], d["anticipated_date"].strftime("%d/%b/%Y") if d.get("anticipated_date") else "")
             _set_cell_text(r.cells[1], (d.get("deliverable") or d.get("kpi_name") or ""))
-            _set_cell_text(r.cells[2], f"{float(d.get('amount_aed') or 0.0):,.2f}")
+            _set_cell_text(r.cells[2], f"{float(d.get('amount_usd') or 0.0):,.2f}")
     else:
         r = t.add_row()
         _set_cell_text(r.cells[0], "")
         _set_cell_text(r.cells[1], "No disbursements defined.")
         _set_cell_text(r.cells[2], "")
 
-    # ===== BUDGET =====
-    _ensure_portrait_section("BUDGET")
-
-    bt = doc.add_table(rows=1, cols=6); bt.style = "Table Grid"; bt.alignment = WD_TABLE_ALIGNMENT.LEFT
-    bh = bt.rows[0]
-    for i, lab in enumerate(("Output", "Item", "Category", "Unit", "Qty", "Total (AED)")):
-        _set_cell_text(bh.cells[i], lab, bold=True, white=True)
-        _shade(bh.cells[i], PRIMARY_SHADE)
-    _repeat_header(bh)
-
-    for i, w in enumerate((Cm(6.0), Cm(7.0), Cm(3.5), Cm(2.5), Cm(2.5), Cm(3.5))):
-        for r in bt.rows: r.cells[i].width = w
-        bt.columns[i].width = w
-
-    id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
-    out_nums, _ = compute_numbers()
-
-    def _outnum(oid): return out_nums.get(oid, "9999")
-    total_budget = 0.0
-
-    for r in sorted(st.session_state.get("budget", []), key=lambda x: _outnum(x[0])):
-        out_id, item, cat, unit, qty, uc, curr, tot, blid = _budget_unpack(r)
-        total_budget += float(tot or 0.0)
-        row = bt.add_row()
-        _set_cell_text(row.cells[0], f"Output {_outnum(out_id)} — {id_to_output.get(out_id,'')}")
-        _set_cell_text(row.cells[1], item or "")
-        _set_cell_text(row.cells[2], cat or "")
-        _set_cell_text(row.cells[3], unit or "")
-        _set_cell_text(row.cells[4], f"{qty:g}")
-        _set_cell_text(row.cells[5], f"{tot:,.2f}")
-
-    # total line (right aligned)
-    p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    run = p.add_run(f"Total budget: {total_budget:,.2f} AED"); run.bold = True
+    # USD→AED note under the budget table
+    note = doc.add_paragraph()
+    note_run = note.add_run(
+        footer_note
+    )
+    note_run.italic = True
 
     # ---- Save to buffer
     buf = BytesIO()
@@ -952,19 +968,6 @@ def view_budget_item_card(row, id_to_output) -> str:
     )
     # reuse the blue style
     return f"<div class='lf-card lf-card--budget'>{body}</div>"
-
-def _budget_unpack(row):
-    """Return (out_id,item,cat,unit,qty,uc,cur,tot,blid) and normalize row to include blid."""
-    if len(row) == 9:
-        out_id, item, cat, unit, qty, uc, cur, tot, blid = row
-    else:
-        out_id, item, cat, unit, qty, uc, cur, tot = row
-        blid = generate_id()
-        row.append(blid)  # normalize in place
-    return out_id, item, cat, unit, qty, uc, cur, tot, blid
-
-def _budget_make(out_id, item, cat, unit, qty, uc, cur, tot, blid=None):
-    return [out_id, item, cat, unit, float(qty), float(uc), cur, float(tot), blid or generate_id()]
 
 # ---------------- CSS for cards ----------------
 def inject_logframe_css():
@@ -1323,39 +1326,13 @@ if uploaded_file is not None:
             if "Budget" in xls.sheet_names:
                 bdf = pd.read_excel(xls, sheet_name="Budget")
                 bdf.columns = [str(c).strip() for c in bdf.columns]
-
-                # Current Outputs (created from Summary) -> build name map
-                outputs_by_name = {(o.get("name") or "").strip(): o["id"] for o in st.session_state.outputs}
-                current_ids = {o["id"] for o in st.session_state.outputs}
-
-                imported = []
+                st.session_state.budget = []
                 for _, r in bdf.iterrows():
-                    # 1) Prefer Output name if present
-                    out_name = str(r.get("Output", "")).strip()
-                    out_id = outputs_by_name.get(out_name)
-
-                    # 2) Fallback: try OutputID *only* if it matches a current id
-                    if not out_id:
-                        raw_id = r.get("OutputID")
-                        if raw_id and str(raw_id) in current_ids:
-                            out_id = str(raw_id)
-
-                    # Read row values
-                    item = str(r.get("Item", "")).strip()
-                    cat = str(r.get("Category", "")).strip()
-                    unit = str(r.get("Unit", "")).strip()
-                    qty = float(r.get("Qty", 0) or 0)
-                    uc = float(r.get("Unit Cost", 0) or 0)
-                    cur = str(r.get("Currency", "USD")).strip() or "USD"
-                    tot = float(r.get("Total", qty * uc) or (qty * uc))
-
-                    # Only keep rows we can link to an Output and that have an item
-                    if out_id and item:
-                        blid = _s(r.get("BudgetLineID")) or None
-                        imported.append(_budget_make(out_id, item, cat, unit, qty, uc, cur, tot, blid))
-
-                if imported:
-                    st.session_state.budget = imported
+                    item = _s(r.get("Budget item"))
+                    desc = _s(r.get("Description"))
+                    tot = float(r.get("Total Cost (USD)") or 0.0)
+                    if item or desc or tot:
+                        st.session_state.budget.append({"item": item, "description": desc, "total_usd": tot})
 
             # ---- Disbursement Schedule import (optional sheet)
             if "Disbursement Schedule" in xls.sheet_names:
@@ -1376,8 +1353,8 @@ if uploaded_file is not None:
                         "kpi_name": (k.get("name") if k else ""),
                         "anticipated_date": parse_date_like(row.get("Anticipated deliverable date")),
                         "deliverable": _s(row.get("Deliverable")),
-                        "amount_aed": float(row.get(
-                            "Maximum Grant instalment payable on satisfaction of this deliverable (AED)") or 0.0),
+                        "amount_usd": float(row.get(
+                            "Maximum Grant instalment payable on satisfaction of this deliverable (USD)") or 0.0),
                     })
 
             # --- Import Identification sheet (if present) and update ID page state ---
@@ -1500,14 +1477,7 @@ with tabs[1]:
     # --- Read-only summary (live)
     # Budget total (computed from detailed budget)
     def _sum_budget():
-        total = 0.0
-        for row in st.session_state.get("budget", []):
-            try:
-                # your budget rows are [OutputID, Item, Category, Unit, Qty, Unit Cost, Currency, Total]
-                total += float(row[7])
-            except Exception:
-                pass
-        return total
+        return sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
 
     budget_total = _sum_budget()
 
@@ -1519,11 +1489,10 @@ with tabs[1]:
     st.markdown("### Summary")
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("**Funding requested (from Budget)**")
-        st.markdown(f"<div style='font-size:1.5em; font-weight:600;'>{fmt_money(budget_total)}</div>",
-                    unsafe_allow_html=True)
+        st.markdown("**Total funding requested (from Budget):**")
+        st.markdown(f"**USD {budget_total:,.2f}**")
     with c2:
-        st.markdown("**Logframe indicators**")
+        st.markdown("**Logframe indicators:**")
         st.markdown(
             f"""
             <div style="display:flex; gap:10px; align-items:center;">
@@ -1987,139 +1956,62 @@ with tabs[4]:
 
     # ---------- Add new budget item ----------
     with st.expander("➕ Add Budget Item"):
-        with st.form("budget_form"):
-            if not st.session_state.outputs:
-                st.warning("Add an Output first (in the Logframe tab) before adding budget lines.")
-                st.form_submit_button("Add to Budget", disabled=True)
-            else:
-                output_parent = st.selectbox(
-                    "Linked Output*",
-                    st.session_state.outputs,
-                    format_func=lambda x: x.get("name") or "Output",
-                    index=0
-                )
-                item      = st.text_input("Item*")
-                category  = st.selectbox("Category", ["Personnel","Supplies","Travel","Equipment","Services","Other"])
-                unit      = st.text_input("Unit (e.g., day, set, PM)")
-                quantity  = st.number_input("Quantity", min_value=0.0, value=1.0)
-                unit_cost = st.number_input("Unit Cost", min_value=0.0, value=0.0)
-                currency  = st.text_input("Currency (ISO 4217)", value="USD")
+        with st.form("budget_form_simple"):
+            item = st.text_input("Budget item*")
+            desc = st.text_area("Description*", placeholder="Brief description…")
+            total = st.number_input("Total Cost (USD)*", min_value=0.0, value=0.0,
+                                    step=500.0, format="%.2f")
 
-                total = round(float(quantity) * float(unit_cost), 2)
-
-                if st.form_submit_button("Add to Budget"):
-                    if not item.strip():
-                        st.warning("Item is required.")
-                    else:
-                        # canonical 8-column schema
-                        st.session_state.budget.append(_budget_make(
-                            output_parent["id"], item.strip(), category, unit.strip(),
-                            quantity, unit_cost, currency.strip(), total
-                        ))
-
-                        st.rerun()
-
-    # ---------- Grouped by Output, compact blue rows ----------
-    id_to_output_name = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
-
-    def render_budget_row_inline(row):
-        """Return compact inline HTML for one budget row."""
-        out_id, item, cat, unit, qty, uc, cur, tot, blid = _budget_unpack(row)
-        return (
-            "<div class='lf-budget-row'>"
-            "  <div class='lf-budget-cells'>"
-            f"    <div class='lf-budget-cell'><span class='lf-budget-chip'>{escape(item or '—')}</span></div>"
-            f"    <div class='lf-budget-cell'>{escape(cat or '—')}</div>"
-            f"    <div class='lf-budget-cell'>{escape(unit or '—')}</div>"
-            f"    <div class='lf-budget-cell'>Qty: {qty or 0:g}</div>"
-            f"    <div class='lf-budget-cell lf-budget-money'>Unit: {fmt_money(uc or 0)}</div>"
-            f"    <div class='lf-budget-cell'>{escape(cur or '—')}</div>"
-            f"    <div class='lf-budget-cell lf-budget-money'><b>{fmt_money(tot or 0)}</b></div>"
-            "  </div>"
-            "</div>"
-        )
-
-    grand_total = 0.0
-
-    # outputs in the same order as in Logframe
-    out_nums, _ = compute_numbers()
-    outputs_sorted = sorted(st.session_state.outputs, key=lambda o: int(out_nums.get(o["id"], "9999").split('.')[0]))
-
-    for out in outputs_sorted:
-        # Header like Workplan
-        st.markdown(view_output_header(out), unsafe_allow_html=True)
-
-        # Items for this output (keep order they were added)
-        rows_here = [(idx, r) for idx, r in enumerate(st.session_state.budget) if r[0] == out["id"]]
-        if not rows_here:
-            st.info("No budget items for this output.")
-            continue
-
-        subtotal = 0.0
-        for idx, r in rows_here:
-            out_id, item, cat, unit, qty, uc, cur, tot, blid = _budget_unpack(r)
-            subtotal += float(tot or 0.0)
-            grand_total += float(tot or 0.0)
-
-            # Unique suffix for keys (prevents duplicate keys even if order changes)
-            row_uid = f"{idx}_{blid}"  # now stable, based on BudgetLineID
-
-            if st.session_state.get("edit_budget_row") == idx:
-                # ----- inline edit mode (row replaced by small form) -----
-                e1, e2, e3 = st.columns([0.90, 0.05, 0.05])
-                with e1:
-                    out_sel = st.selectbox(
-                        "Output", st.session_state.outputs,
-                        format_func=lambda x: x.get("name") or "Output",
-                        index=next((j for j,o in enumerate(st.session_state.outputs) if o["id"] == out_id), 0),
-                        key=f"b_out_{row_uid}"
-                    )
-                    new_item = st.text_input("Item", value=item, key=f"b_item_{row_uid}")
-                    new_cat  = st.selectbox(
-                        "Category", ["Personnel","Supplies","Travel","Equipment","Services","Other"],
-                        index=(["Personnel","Supplies","Travel","Equipment","Services","Other"].index(cat)
-                               if cat in ["Personnel","Supplies","Travel","Equipment","Services","Other"] else 0),
-                        key=f"b_cat_{row_uid}"
-                    )
-                    cols = st.columns(3)
-                    with cols[0]:
-                        new_unit = st.text_input("Unit", value=unit, key=f"b_unit_{row_uid}")
-                    with cols[1]:
-                        new_qty  = st.number_input("Qty", min_value=0.0, value=float(qty or 0), key=f"b_qty_{row_uid}")
-                    with cols[2]:
-                        new_uc   = st.number_input("Unit Cost", min_value=0.0, value=float(uc or 0), key=f"b_uc_{row_uid}")
-                    new_cur = st.text_input("Currency", value=cur or "USD", key=f"b_cur_{row_uid}")
-                    new_tot = round(float(new_qty) * float(new_uc), 2)
-                    st.caption(f"New total: {fmt_money(new_tot)}")
-
-                if e2.button("💾", key=f"b_save_{row_uid}"):
-                    st.session_state.budget[idx] = _budget_make(
-                        out_sel["id"], new_item.strip(), new_cat, new_unit.strip(),
-                        new_qty, new_uc, new_cur.strip(), new_tot, blid
-                    )
-                    st.session_state["edit_budget_row"] = None
+            submitted = st.form_submit_button("Add")
+            if submitted:
+                if not item.strip():
+                    st.warning("Budget item is required.")
+                elif not desc.strip():
+                    st.warning("Description is required.")
+                elif total <= 0:
+                    st.warning("Please enter a positive amount.")
+                else:
+                    st.session_state.budget.append({
+                        "id": generate_id(),                 # <- stable row id for unique widget keys
+                        "item": item.strip(),
+                        "description": desc.strip(),
+                        "total_usd": float(total),
+                    })
                     st.rerun()
 
-                if e3.button("✖️", key=f"b_cancel_{row_uid}"):
-                    st.session_state["edit_budget_row"] = None
+    # Ensure each budget row has a stable id for widget keys (backfill if missing)
+    for r in st.session_state.budget:
+        if "id" not in r:
+            r["id"] = generate_id()
+
+    # ---------- Current budget list (summary: item / description / total) ----------
+    st.markdown("### Current Budget (Summary)")
+    if not st.session_state.budget:
+        st.info("No budget items yet.")
+    else:
+        for r in st.session_state.budget:
+            rid = r["id"]
+            c1, c2, c3, c4 = st.columns([0.28, 0.50, 0.12, 0.10])
+
+            # Use row id in keys to avoid duplicates across the app
+            c1_val = c1.text_input("Budget item", value=r.get("item", ""), key=f"bud_item_{rid}")
+            c2_val = c2.text_area("Description", value=r.get("description", ""), key=f"bud_desc_{rid}", height=70)
+            c3_val = c3.number_input("Total (USD)", min_value=0.0, value=float(r.get("total_usd") or 0.0),
+                                     step=500.0, format="%.2f", key=f"bud_total_{rid}")
+
+            with c4:
+                if st.button("💾", key=f"bud_save_{rid}"):
+                    r["item"]        = c1_val.strip()
+                    r["description"] = c2_val.strip()
+                    r["total_usd"]   = float(c3_val)
+                    st.rerun()
+                if st.button("🗑️", key=f"bud_del_{rid}"):
+                    st.session_state.budget = [x for x in st.session_state.budget if x["id"] != rid]
                     st.rerun()
 
-            else:
-                # ----- view mode: compact row + buttons -----
-                c1, c2, c3 = st.columns([0.92, 0.04, 0.04])
-                c1.markdown(render_budget_row_inline(r), unsafe_allow_html=True)
-                if c2.button("✏️", key=f"b_edit_{row_uid}"):
-                    st.session_state["edit_budget_row"] = idx
-                    st.rerun()
-                if c3.button("🗑️", key=f"b_del_{row_uid}"):
-                    del st.session_state.budget[idx]
-                    st.rerun()
-
-        # Subtotal under the group
-        st.markdown(f"<div class='lf-subtotal'>Subtotal: {fmt_money(subtotal)}</div>", unsafe_allow_html=True)
-
-    # Grand total at the bottom
-    st.markdown(f"<div class='lf-grandtotal'>Total: {fmt_money(grand_total)}</div>", unsafe_allow_html=True)
+        total_usd = sum(float(x.get("total_usd") or 0.0) for x in st.session_state.budget)
+        st.markdown(f"**Total: USD {total_usd:,.2f}**")
+        st.caption(footer_note)
 
 # ===== TAB 6: Disbursement Schedule =====
 with tabs[5]:
@@ -2138,7 +2030,7 @@ with tabs[5]:
             n = out_nums.get(d.get("output_id",""), "")
             return f"{n} | {id_to_output.get(d.get('output_id'), '(unassigned)')}"
 
-        st.caption("Enter the anticipated date and the amount (AED). The **Linked-KPI** comes from the Logframe and is not editable here.")
+        st.caption("Enter the anticipated date and the amount (USD). The **Linked-KPI** comes from the Logframe and is not editable here.")
         # Render (sorted for stability)
         for row in sorted(st.session_state.disbursement, key=lambda x: (_out_label(x), x.get("kpi_name",""))):
             kpid = row["kpi_id"]
@@ -2149,12 +2041,13 @@ with tabs[5]:
                 # make Linked-KPI explicitly read-only and visually greyed out
                 c2.text_input("Linked-KPI", value=row.get("kpi_name",""), key=f"dsp_kpi_{kpid}", disabled=True)
                 new_date = c3.date_input("Anticipated date", value=row.get("anticipated_date"), key=f"dsp_date_{kpid}")
-                new_amt  = c4.number_input("Amount (AED)", min_value=0.0, value=float(row.get("amount_aed") or 0.0),
+                new_amt  = c4.number_input("Amount (USD)", min_value=0.0, value=float(row.get("amount_usd") or 0.0),
                                            step=1000.0, key=f"dsp_amt_{kpid}")
 
                 # Persist only editable fields (date, amount)
                 row["anticipated_date"] = new_date
-                row["amount_aed"] = float(new_amt)
+                row["amount_usd"] = float(new_amt)
+    st.caption(footer_note)
 
 # ===== TAB 7: Export =====
 tabs[6].header("📤 Export Your Application")
@@ -2165,14 +2058,7 @@ if tabs[6].button("Generate Excel Backup File"):
 
     # --- Sheet 0: Identification (Project ID page) ---
     def _sum_budget_for_export():
-        total = 0.0
-        for r in st.session_state.get("budget", []):
-            try:
-                total += float(r[7])  # Total at index 7 in current budget schema
-            except Exception:
-                pass
-        return total
-
+        return sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
 
     id_info = st.session_state.get("id_info", {}) or {}
 
@@ -2288,30 +2174,17 @@ if tabs[6].button("Generate Excel Backup File"):
             ", ".join(id_to_kpi.get(i, "") for i in (a.get("kpi_ids") or [])),  # display names
         ])
 
-    # Budget
     # --- Budget (export) ---
     ws3 = wb.create_sheet("Budget")
-    ws3.append(["BudgetLineID", "OutputID", "Output", "Item", "Category", "Unit", "Qty",
-                "Unit Cost", "Currency", "Total",])
+    ws3.append(["Budget item", "Description", "Total Cost (USD)"])
 
-    # map id -> plain output name (not label)
-    id_to_output_name = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
+    # Write simplified budget rows (keep amounts numeric for Excel)
+    for r in st.session_state.get("budget", []):
+        ws3.append([r.get("item", ""), r.get("description", ""), float(r.get("total_usd") or 0.0)])
 
-    for r in st.session_state.budget:
-        out_id, item, cat, unit, qty, unit_cost, curr, total, blid = _budget_unpack(r)
-        ws3.append([
-            blid, out_id, id_to_output_name.get(out_id, ""),
-            item, cat, unit, qty, unit_cost, curr, total
-        ])
-
-    # OPTIONAL Excel number formats (update column indices because we added "Output")
+    # Number format for Total (col C)
     for row in ws3.iter_rows(min_row=2):
-        # columns (1-indexed):
-        # 1 BudgetLineID, 2 OutputID, 3 Output, 4 Item, 5 Category,
-        # 6 Unit, 7 Qty, 8 Unit Cost, 9 Currency, 10 Total
-        row[6].number_format = '#,##0.00'  # Qty (col 7)
-        row[7].number_format = '#,##0.00'  # Unit Cost (col 8)
-        row[9].number_format = '#,##0.00'  # Total (col 10)
+        row[2].number_format = '#,##0.00'
 
     # --- Disbursement Schedule (export) ---
     wsd = wb.create_sheet("Disbursement Schedule")
@@ -2319,7 +2192,7 @@ if tabs[6].button("Generate Excel Backup File"):
         "KPIID",  # machine id for mapping back
         "Anticipated deliverable date",
         "Deliverable",
-        "Maximum Grant instalment payable on satisfaction of this deliverable (AED)"
+        "Maximum Grant instalment payable on satisfaction of this deliverable (USD)"
     ])
 
     from datetime import date as _date
@@ -2330,7 +2203,7 @@ if tabs[6].button("Generate Excel Backup File"):
             "output_id": k.get("parent_id"),
             "anticipated_date": k.get("end_date") or k.get("start_date") or None,
             "deliverable": k.get("name", ""),
-            "amount_aed": 0.0,
+            "amount_usd": 0.0,
         }
         for k in st.session_state.kpis if bool(k.get("linked_payment"))
     ]
@@ -2347,7 +2220,7 @@ if tabs[6].button("Generate Excel Backup File"):
             d.get("kpi_id") or "",
             d.get("anticipated_date") or None,  # <-- date, not string
             (d.get("deliverable") or ""),
-            float(d.get("amount_aed") or 0.0),
+            float(d.get("amount_usd") or 0.0),
         ])
 
     # Number formats: Date (col B) and Amount (col D)
