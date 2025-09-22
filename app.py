@@ -14,7 +14,8 @@ import streamlit as st, requests, tempfile, os
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from docx.enum.section import WD_ORIENT, WD_SECTION_START
-
+from docx.shared import Pt
+from docx.oxml.ns import qn
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Falcon Awards Application Portal", layout="wide")
@@ -436,6 +437,54 @@ def sync_disbursement_from_kpis():
     # remove rows for KPIs no longer payment-linked
     st.session_state.disbursement = [d for d in st.session_state.disbursement if d.get("kpi_id") in keep_ids]
 
+def _force_calibri_everywhere(doc):
+    # 1. Update the document's default styles
+    for style_name in ["Normal", "Heading 1", "Heading 2", "Heading 3", "Table Grid"]:
+        try:
+            style = doc.styles[style_name]
+            font = style.font
+            font.name = "Calibri"
+            font.size = Pt(11)
+            rpr = style.element.rPr
+            if rpr is not None:
+                rFonts = rpr.rFonts
+                if rFonts is not None:
+                    rFonts.set(qn("w:ascii"), "Calibri")
+                    rFonts.set(qn("w:hAnsi"), "Calibri")
+                    rFonts.set(qn("w:cs"), "Calibri")
+        except KeyError:
+            # style may not exist in this template
+            pass
+
+    # 2. Sweep through all paragraphs and runs
+    for p in doc.paragraphs:
+        for run in p.runs:
+            run.font.name = "Calibri"
+            run.font.size = Pt(11)
+            rpr = run._element.rPr
+            if rpr is not None:
+                rFonts = rpr.rFonts
+                if rFonts is not None:
+                    rFonts.set(qn("w:ascii"), "Calibri")
+                    rFonts.set(qn("w:hAnsi"), "Calibri")
+                    rFonts.set(qn("w:cs"), "Calibri")
+
+    # 3. Sweep through all table cells
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        run.font.name = "Calibri"
+                        run.font.size = Pt(11)
+                        rpr = run._element.rPr
+                        if rpr is not None:
+                            rFonts = rpr.rFonts
+                            if rFonts is not None:
+                                rFonts.set(qn("w:ascii"), "Calibri")
+                                rFonts.set(qn("w:hAnsi"), "Calibri")
+                                rFonts.set(qn("w:cs"), "Calibri")
+
 def build_logframe_docx():
     # Lazy import so app loads even if package is missing
     try:
@@ -797,7 +846,7 @@ def build_logframe_docx():
     try:
         gantt_buf = _gantt_png_buf()
         if gantt_buf:
-            sec_land = _new_landscape_section("WORKPLAN – Gantt")
+            sec_land = _new_landscape_section("WORKPLAN")
             from docx.shared import Cm
             width_cm = _content_width_cm(sec_land)
             doc.add_picture(gantt_buf, width=Cm(max(1.0, width_cm - 0.5)))  # 0.5 cm safety
@@ -921,6 +970,9 @@ def build_logframe_docx():
         footer_note
     )
     note_run.italic = True
+
+    # Enforce Calibri globally:
+    _force_calibri_everywhere(doc)
 
     # ---- Save to buffer
     buf = BytesIO()
@@ -1474,34 +1526,104 @@ with tabs[1]:
         for e in errs:
             st.error(e)
 
-    # --- Read-only summary (live)
-    # Budget total (computed from detailed budget)
-    def _sum_budget():
-        return sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
 
-    budget_total = _sum_budget()
+    # ---------- Summary cards (dashboard-style) ----------
 
-    # Live counts
+    def format_k_usd(val: float) -> str:
+        if val >= 1000:
+            return f"USD {val / 1000:,.0f}k"
+        return f"USD {val:,.0f}"
+
+    # numbers you already compute above
+    budget_total = sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
     outputs_count = len(st.session_state.get("outputs", []))
-    # activities_count = len(st.session_state.get("activities", []))
     kpis_count = len(st.session_state.get("kpis", []))
 
-    st.markdown("### Summary")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Total funding requested (from Budget):**")
-        st.markdown(f"**USD {budget_total:,.2f}**")
-    with c2:
-        st.markdown("**Logframe indicators:**")
-        st.markdown(
-            f"""
-            <div style="display:flex; gap:10px; align-items:center;">
-              <div style="background:#eef2ff;border:1px solid #dbe2ff;border-radius:999px;padding:6px 10px;">Outputs: <b>{outputs_count}</b></div>
-              <div style="background:#f7f7f9;border:1px solid #e6e6e6;border-radius:999px;padding:6px 10px;">KPIs: <b>{kpis_count}</b></div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+    # (optional) project duration in months as an extra metric
+    start = st.session_state.get("id_info", {}).get("start_date")
+    end = st.session_state.get("id_info", {}).get("end_date")
+    duration_months = 0
+    if start and end:
+        duration_months = max(0, int((end - start).days / 30.4375))  # avg month length
+
+    # Card CSS (scoped to avoid collisions)
+    st.markdown("""
+    <style>
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(280px, 1fr));
+      gap: 18px;
+      margin: 10px 0 8px;
+    }
+    @media (min-width: 1024px) {
+      .cards-grid { grid-template-columns: repeat(4, minmax(250px, 1fr)); }
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 16px;
+      box-shadow: 0 6px 18px rgba(16,24,40,.06);
+      padding: 18px 18px 20px;
+      border: 1px solid rgba(16,24,40,.06);
+      position: relative;
+    }
+    .card h4 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: #1f2937;
+    }
+    .card .value {
+      font-size: 2rem;
+      font-weight: 800;
+      margin-top: 6px;
+      color: #0f172a;
+      letter-spacing: -0.02em;
+    }
+    .card .badge {
+      position: absolute;
+      right: 14px;
+      top: 14px;
+      width: 42px; height: 42px;
+      border-radius: 12px;
+      display: grid; place-items: center;
+      color: #0f172a;
+      font-size: 20px;
+    }
+    .badge-blue   { background: rgba(59,130,246,.12); color:#2563eb; }
+    .badge-green  { background: rgba(16,185,129,.12); color:#059669; }
+    .badge-indigo { background: rgba(99,102,241,.12); color:#4f46e5; }
+    .badge-slate  { background: rgba(148,163,184,.18); color:#334155; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown("### Summary", unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div class="cards-grid">
+
+      <div class="card">
+        <div class="badge badge-blue">💵</div>
+        <h4>Total Planned Budget</h4>
+        <div class="value">{format_k_usd(budget_total)}</div>
+      </div>
+
+      <div class="card">
+        <div class="badge badge-indigo">📦</div>
+        <h4>Outputs</h4>
+        <div class="value">{outputs_count:,}</div>
+      </div>
+
+      <div class="card">
+        <div class="badge badge-slate">🎯</div>
+        <h4>KPIs</h4>
+        <div class="value">{kpis_count:,}</div>
+      </div>
+
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Optional: a small note below the cards
+    st.caption(footer_note)
 
     # Cross-check note area (non-blocking warnings placeholder)
     warnings = []
