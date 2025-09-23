@@ -47,3 +47,7 @@ build/
 
 # Node (if any front-end bits creep in)
 node_modules/
+
+# Ignore entire app and tests folders
+/app/
+/tests/

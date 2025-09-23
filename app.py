@@ -1212,7 +1212,8 @@ Please complete each section of your application:
 2. **Logframe** – Add **Goal**, **Outcome**, **Outputs**, then **KPIs**.
 3. **Workplan** – Add **Activities** linked to Outputs/KPIs with dates.
 4. **Budget** – Add **Budget lines** linked to Outputs.
-5. **Export** – Use **Generate Work Document** to produce a .docx that includes the logframe, workplan (table & Gantt) and budget.
+5. **Disbursement Schedule** – Add **KPI-Linked Milestones** with dates and amounts.
+6. **Export** – **Create Excel Backup** to save your progress for later editing and **Generate Word Document** with final documents.
 
 ### Definitions
 - **Goal**: The long-term vision (impact).
@@ -1222,7 +1223,7 @@ Please complete each section of your application:
 - **Activity**: Tasks that produce Outputs (scheduled in the **Workplan**).
 - **Assumptions**: External conditions necessary for success.
 - **Means of Verification (MoV)**: Where/how the KPI will be measured.
-- **Payment-linked indicator**: KPI that triggers financing when achieved (optional).
+- **Payment-linked indicator**: KPI that triggers funding release when achieved (optional).
 - **Budget line**: A costed item (category, unit, quantity, unit cost).
 
 Once done, export your application as an Excel file.
