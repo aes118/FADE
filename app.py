@@ -1499,7 +1499,7 @@ tabs = st.tabs([
 # ===== TAB 1: Instructions =====
 tabs[0].markdown(
     """
-# 📝 Welcome to the Falcon Awards Application Portal
+# 📝 Welcome to the Falcon Awards Projects Portal
 
 Please complete each section of your application:
 
@@ -2442,6 +2442,24 @@ with tabs[4]:
     def _activity_label(aid):
         return act_lookup.get(aid) if aid in act_lookup else "(none)"
 
+
+    # --- preload budget containers from workplan and group existing lines by activity ---
+    from collections import defaultdict
+
+
+    def ensure_budget_containers_from_workplan():
+        """Keep the activity ids we should render in Budget (mirror the Workplan)."""
+        st.session_state.setdefault("_budget_activity_ids", set())
+        st.session_state["_budget_activity_ids"] = {a["id"] for a in st.session_state.get("workplan", [])}
+
+
+    ensure_budget_containers_from_workplan()
+
+    # Group the current lines by activity id
+    lines_by_act = defaultdict(list)
+    for row in st.session_state.get("budget", []):
+        lines_by_act[row.get("activity_id")].append(row)
+
     # ---------- CSS ----------
     st.markdown("""
     <style>
@@ -2481,165 +2499,127 @@ with tabs[4]:
     """, unsafe_allow_html=True)
 
     # =========================================================
-    # ADD BUDGET LINE  (formatted like screenshot; dynamic Sub)
+    # GROUPED VIEW (Activity → line items → subtotal) + per-activity add form
     # =========================================================
-    # keep controlled keys so dependency updates instantly
-    st.session_state.setdefault("add_item", "")
-    st.session_state.setdefault("add_act_lbl", "(none)")
-    st.session_state.setdefault("add_cat", list(CATEGORY_TREE.keys())[0])
-    st.session_state.setdefault("add_sub", (subcategories_for(st.session_state["add_cat"]) or ["(none)"])[0])
-    st.session_state.setdefault("add_unit_choice", "per day" if "per day" in UNIT_DROPDOWN else UNIT_DROPDOWN[0])
-    st.session_state.setdefault("add_unit_custom", "")
-    st.session_state.setdefault("add_uc", 0.0)
-    st.session_state.setdefault("add_qty", 1.0)
-
-    def _on_add_cat_change():
-        opts = subcategories_for(st.session_state["add_cat"]) or ["(none)"]
-        st.session_state["add_sub"] = opts[0]
-
-    with st.expander("➕ Add Budget Line", expanded=False):
-        st.markdown("<div class='form-card'>", unsafe_allow_html=True)
-
-        # 1) Linked Activity
-        st.session_state["add_act_lbl"] = st.selectbox(
-            "Linked Activity", act_menu, index=act_menu.index(st.session_state["add_act_lbl"])
-        )
-        new_activity_id = None if st.session_state["add_act_lbl"] == "(none)" else \
-            next(aid for aid, lab in act_lookup.items() if lab == st.session_state["add_act_lbl"])
-
-        # 2) Line Item (full width)
-        st.session_state["add_item"] = st.text_area(
-            "Line Item*", value=st.session_state["add_item"], height=48, key="add_item_key"
-        )
-
-        # 3) Category | Sub-Category (dependent)
-        c_cat, c_sub = st.columns(2)
-        st.session_state["add_cat"] = c_cat.selectbox(
-            "Cost Category*", list(CATEGORY_TREE.keys()),
-            index=list(CATEGORY_TREE.keys()).index(st.session_state["add_cat"]),
-            on_change=_on_add_cat_change, key="add_cat_key"
-        )
-        sub_opts = subcategories_for(st.session_state["add_cat"]) or ["(none)"]
-        st.session_state["add_sub"] = c_sub.selectbox(
-            "Sub Category*", sub_opts,
-            index=sub_opts.index(st.session_state["add_sub"]) if st.session_state["add_sub"] in sub_opts else 0,
-            key="add_sub_key"
-        )
-
-        # 4) Unit | Unit Cost | Quantity  (Unit depends on Sub Category)
-        c_unit, c_uc, c_qty = st.columns([0.42, 0.29, 0.29])
-
-        unit_opts_add = unit_options_for_sub(st.session_state["add_sub"])
-        if st.session_state["add_unit_choice"] not in unit_opts_add:
-            st.session_state["add_unit_choice"] = unit_opts_add[0] if unit_opts_add else "Custom…"
-
-        st.session_state["add_unit_choice"] = c_unit.selectbox(
-            "Unit",
-            unit_opts_add,
-            index=unit_opts_add.index(st.session_state["add_unit_choice"])
-            if st.session_state["add_unit_choice"] in unit_opts_add else len(unit_opts_add) - 1,
-            key="add_unit_choice_box"
-        )
-        if st.session_state["add_unit_choice"] == "Custom…":
-            st.session_state["add_unit_custom"] = c_unit.text_input(" ",
-                                                                    value=st.session_state.get("add_unit_custom", ""))
-
-        unit_final = (st.session_state["add_unit_custom"].strip()
-                      if st.session_state["add_unit_choice"] == "Custom…"
-                      else st.session_state["add_unit_choice"])
-
-        st.session_state["add_uc"]  = c_uc.number_input("Unit Cost (USD)*",
-                                                        min_value=0.0, value=float(st.session_state["add_uc"]),
-                                                        step=10.0, format="%.2f")
-        st.session_state["add_qty"] = c_qty.number_input("Quantity*",
-                                                         min_value=0.0, value=float(st.session_state["add_qty"]),
-                                                         step=1.0,  format="%.2f")
-        add_total = float(st.session_state["add_uc"]) * float(st.session_state["add_qty"])
-
-        # 5) Footer: Add + live total chip (right)
-        c_left, c_right = st.columns([0.30, 0.70])
-        if c_left.button("Add Line", key="add_submit_btn"):
-            if not st.session_state["add_item"].strip():
-                st.warning("Line Item is required.")
-            elif not st.session_state["add_cat"]:
-                st.warning("Cost Category is required.")
-            elif not st.session_state["add_sub"] or st.session_state["add_sub"] == "(none)":
-                st.warning("Sub Category is required.")
-            elif not str(unit_final).strip():
-                st.warning("Please select or type a Unit.")
-            elif float(st.session_state["add_uc"]) <= 0 or float(st.session_state["add_qty"]) <= 0:
-                st.warning("Unit cost and quantity must be positive.")
-            else:
-                st.session_state.budget.append({
-                    "id": generate_id(),
-                    "activity_id": new_activity_id,
-                    "item": st.session_state["add_item"].strip(),
-                    "category": st.session_state["add_cat"],
-                    "subcategory": st.session_state["add_sub"],
-                    "unit": unit_final,
-                    "unit_cost": float(st.session_state["add_uc"]),
-                    "qty": float(st.session_state["add_qty"]),
-                    "currency": "USD",
-                    "total_usd": add_total,
-                })
-                # reset light
-                st.session_state["add_item"] = ""
-                st.session_state["add_unit_custom"] = ""
-                st.success("Budget line added.")
-                st.rerun()
-        with c_right:
-            st.markdown(f"<div style='text-align:right;'><span class='total-chip'>USD {add_total:,.2f}</span></div>",
-                        unsafe_allow_html=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)  # end form-card
-
-    # =========================================================
-    # SUMMARY (Activity | Line Item | Total | Actions)
-    # =========================================================
-    # compute totals (in case UC/Qty edited elsewhere)
-    for r in st.session_state.budget:
-        r.setdefault("id", generate_id())
-        r["total_usd"] = float(r.get("unit_cost") or 0.0) * float(r.get("qty") or 0.0)
 
     st.markdown("### Current Budget (Summary)")
 
-    # header
-    # Header (leave yours as-is)
-    h1, h2, h3, h4 = st.columns([0.45, 0.30, 0.15, 0.10])
-    h1.markdown("**Activity**")
-    h2.markdown("**Line Item**")
-    h3.markdown("**Total (USD)**")
-    h4.markdown("**Actions**")
+    # optional row divider style to keep alignment with wrapped Activity names
+    st.markdown("""
+    <style>
+    .budget-row-divider{border-bottom:1px solid #e5e7eb; margin:10px 0 8px;}
+    .budget-cell{white-space:normal !important; line-height:1.35;}
+    .total-chip{font-weight:700;padding:.30rem .55rem;background:#fff;border-radius:6px;border:1px solid rgba(0,0,0,.10);white-space:nowrap;}
+    </style>
+    """, unsafe_allow_html=True)
 
-    # Rows (aligned)
-    for r in st.session_state.budget:
-        rid = r["id"]
-        act = _activity_label(r.get("activity_id"))
-        line = r.get("item", "").strip() or "—"
-        total = float(r.get("total_usd") or 0.0)
+    _, _, act_nums = compute_numbers(include_activities=True)
 
-        row = st.container()  # <— wrapper for a whole row
-        c1, c2, c3, c4 = row.columns([0.45, 0.30, 0.15, 0.10])
 
-        c1.markdown(f"<div class='budget-cell'>{act}</div>", unsafe_allow_html=True)
-        c2.markdown(f"<div class='budget-cell'>{line}</div>", unsafe_allow_html=True)
-        c3.markdown(f"<span class='total-chip'>USD {total:,.2f}</span>", unsafe_allow_html=True)
+    def _act_label(a):
+        return f"Activity {act_nums.get(a['id'], '?')} — {a.get('name', '')}"
 
-        b1, b2 = c4.columns(2)
-        if b1.button("✏️", key=f"edit_{rid}", help="Edit this line"):
-            st.session_state.edit_budget_row = rid
-            st.session_state.show_edit = True
-            st.rerun()
-        if b2.button("🗑️", key=f"del_{rid}", help="Delete this line"):
-            st.session_state.budget = [x for x in st.session_state.budget if x["id"] != rid]
-            st.rerun()
 
-        # one full-width divider for the row
-        row.markdown("<div class='budget-row-divider'></div>", unsafe_allow_html=True)
+    # Iterate activities in Workplan order (preloaded by ensure_budget_containers_from_workplan)
+    grand_total = 0.0
+    for a in st.session_state.get("workplan", []):
+        if a["id"] not in st.session_state["_budget_activity_ids"]:
+            continue
 
-    # grand total
-    grand = sum(float(x.get("total_usd") or 0.0) for x in st.session_state.get("budget", []))
-    st.markdown(f"**Total: USD {grand:,.2f}**")
+        # Activity header
+        st.markdown(f"**{_act_label(a)}**")
+
+        # Column headers (per activity)
+        h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.28, 0.18, 0.18, 0.12, 0.10, 0.06, 0.06, 0.08])
+        h1.markdown("**Line Item**")
+        h2.markdown("**Category**")
+        h3.markdown("**Sub Category**")
+        h4.markdown("**Unit**")
+        h5.markdown("**Unit Cost (USD)**")
+        h6.markdown("**Qty**")
+        h7.markdown("**Total (USD)**")
+        h8.markdown("**Actions**")
+
+        # Existing lines under this activity
+        subtotal = 0.0
+        for r in lines_by_act.get(a["id"], []):
+            rid = r["id"]
+            l1, l2, l3, l4, l5, l6, l7, l8 = st.columns([0.28, 0.18, 0.18, 0.12, 0.10, 0.06, 0.06, 0.08])
+            l1.markdown(f"<div class='budget-cell'>{r.get('item', '—')}</div>", unsafe_allow_html=True)
+            l2.write(r.get("category", "—"))
+            l3.write(r.get("subcategory", "—"))
+            l4.write(r.get("unit", "—"))
+            l5.write(f"{float(r.get('unit_cost') or 0.0):,.2f}")
+            l6.write(f"{float(r.get('qty') or 0.0):,.2f}")
+            total = float(r.get("total_usd") or (float(r.get("unit_cost") or 0.0) * float(r.get("qty") or 0.0)) or 0.0)
+            l7.write(f"{total:,.2f}")
+            a1, a2 = l8.columns(2)
+            if a1.button("✏️", key=f"edit_{rid}", help="Edit line"):
+                st.session_state.edit_budget_row = rid
+                st.session_state.show_edit = True
+                st.rerun()
+            if a2.button("🗑️", key=f"del_{rid}", help="Delete line"):
+                st.session_state.budget = [x for x in st.session_state.budget if x["id"] != rid]
+                st.rerun()
+
+            subtotal += total
+
+        grand_total += subtotal
+        st.markdown(f"<div style='text-align:right; font-weight:700;'>Subtotal: USD {subtotal:,.2f}</div>",
+                    unsafe_allow_html=True)
+
+        # Per-activity add form (link is implicit by activity id)
+        with st.expander("➕ Add Budget Line to this Activity"):
+            c1, c2 = st.columns([0.60, 0.40])
+            item = c1.text_input("Line Item*", key=f"add_item_{a['id']}")
+            cat = c2.selectbox("Cost Category*", list(CATEGORY_TREE.keys()), key=f"add_cat_{a['id']}")
+            sub_opts = subcategories_for(cat) or ["(none)"]
+            sub = c2.selectbox("Sub Category*", sub_opts, key=f"add_sub_{a['id']}")
+
+            # Unit (use your dynamic Sub→Unit here if desired)
+            cU, cUC, cQ = st.columns([0.38, 0.31, 0.31])
+            unit = cU.selectbox("Unit", UNIT_DROPDOWN + ["Custom…"], key=f"add_unit_{a['id']}")
+            if unit == "Custom…":
+                unit = cU.text_input(" ", key=f"add_unit_custom_{a['id']}")
+
+            uc = cUC.number_input("Unit Cost (USD)*", min_value=0.0, value=0.0, step=10.0, format="%.2f",
+                                  key=f"add_uc_{a['id']}")
+            qty = cQ.number_input("Qty*", min_value=0.0, value=1.0, step=1.0, format="%.2f", key=f"add_qty_{a['id']}")
+            line_total = float(uc) * float(qty)
+
+            cL, cR = st.columns([0.20, 0.80])
+            if cL.button("Add line", key=f"add_line_btn_{a['id']}"):
+                if not item.strip():
+                    st.warning("Line Item is required.")
+                elif not cat or not sub or sub == "(none)":
+                    st.warning("Pick a Cost Category and Sub Category.")
+                elif not str(unit).strip():
+                    st.warning("Pick or type a Unit.")
+                elif uc <= 0 or qty <= 0:
+                    st.warning("Unit cost and quantity must be positive.")
+                else:
+                    st.session_state.budget.append({
+                        "id": generate_id(),
+                        "activity_id": a["id"],  # ← the link is here
+                        "item": item.strip(),
+                        "category": cat,
+                        "subcategory": sub,
+                        "unit": unit.strip(),
+                        "unit_cost": float(uc),
+                        "qty": float(qty),
+                        "currency": "USD",
+                        "total_usd": line_total,
+                    })
+                    st.rerun()
+
+            cR.markdown(f"<div style='text-align:right; font-weight:700;'>USD {line_total:,.2f}</div>",
+                        unsafe_allow_html=True)
+
+        # one full-width divider per activity
+        st.markdown("<div class='budget-row-divider'></div>", unsafe_allow_html=True)
+
+    # Grand total
+    st.markdown(f"**Total: USD {grand_total:,.2f}**")
     st.caption(footer_note)
 
     # =========================================================
