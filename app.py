@@ -18,7 +18,7 @@ from docx.shared import Pt
 from docx.oxml.ns import qn
 
 # ---------------- Page config ----------------
-st.set_page_config(page_title="Falcon Awards Application Portal", layout="wide")
+st.set_page_config(page_title="Falcon Awards Project Portal", layout="wide")
 st.sidebar.image("glide_logo.png", width="stretch")
 
 # ---------------- Helpers & State ----------------
@@ -1488,7 +1488,7 @@ def _budget_unpack(row):
 # ---------------- Tabs ----------------
 tabs = st.tabs([
     "📘 Instructions",
-    "🪪 Identification",
+    "🪪 Project Overview",
     "🧱 Logframe",
     "🗂️ Workplan",
     "💵 Budget",
@@ -1499,11 +1499,11 @@ tabs = st.tabs([
 # ===== TAB 1: Instructions =====
 tabs[0].markdown(
     """
-# 📝 Welcome to the Falcon Awards Projects Portal
+# 📝 Welcome to the Falcon Awards Project Portal
 
 Please complete each section of your application:
 
-1. **Identification** – Fill project & contacts.
+1. **Project Overview** – Fill project & contacts.
 2. **Logframe** – Add **Goal**, **Outcome**, **Outputs**, then **KPIs**.
 3. **Workplan** – Add **Activities** linked to Outputs/KPIs with dates.
 4. **Budget** – Add **Budget lines** linked to Activities.
@@ -1514,12 +1514,12 @@ Please complete each section of your application:
 - **Goal**: The long-term vision (impact).
 - **Outcome**: The specific change expected from the project.
 - **Output**: Tangible products/services delivered by the project.
-- **KPI**: Quantifiable metric to judge performance (with baseline, target, dates, MoV).
-- **Activity**: Tasks that produce Outputs (scheduled in the **Workplan**).
+- **Key Performance Indicator (KPI)**: Quantifiable metric to judge performance (with baseline, target, dates, MoV).
+- **Activity**: Tasks that produce Outputs (scheduled in the Workplan).
+- **Budget line**: A costed item linked to an activity (category, unit, quantity, unit cost). Together, the budget lines under an activity represent the resources required to implement it.
 - **Assumptions**: External conditions necessary for success.
 - **Means of Verification (MoV)**: Where/how the KPI will be measured.
 - **Payment-linked indicator**: KPI that triggers funding release when achieved (optional).
-- **Budget line**: A costed item (category, unit, quantity, unit cost).
 
 Once done, export your application as an Excel file.
 
@@ -1759,12 +1759,16 @@ if uploaded_file is not None:
                             "Maximum Grant instalment payable on satisfaction of this deliverable (USD)") or 0.0),
                     })
 
-            # --- Import Identification sheet (if present) and update ID page state ---
-            if "Identification" in xls.sheet_names:
-                id_df = pd.read_excel(xls, sheet_name="Identification")
+            # --- Import Project Overview sheet (if present) and update Project Overview state ---
+            if "Project Overview" in xls.sheet_names:
+                id_df = pd.read_excel(xls, sheet_name="Project Overview")
                 try:
-                    kv = {str(r["Field"]).strip(): str(r["Value"]) if not pd.isna(r["Value"]) else ""
-                          for _, r in id_df.iterrows()}
+                    kv = {
+                        str(r["Field"]).strip(): (
+                            "" if (pd.isna(r["Value"])) else str(r["Value"])
+                        )
+                        for _, r in id_df.iterrows()
+                    }
                 except Exception:
                     kv = {}
 
@@ -1785,16 +1789,16 @@ if uploaded_file is not None:
                 })
                 st.session_state.id_info = id_info
 
-                # also prime the live widget keys so the inputs show the imported values immediately
-                st.session_state["id_title"]        = id_info["title"]
-                st.session_state["id_pi_name"]      = id_info["pi_name"]
-                st.session_state["id_pi_email"]     = id_info["pi_email"]
-                st.session_state["id_institution"]  = id_info["institution"]
-                st.session_state["id_start_date"]   = id_info["start_date"]
-                st.session_state["id_end_date"]     = id_info["end_date"]
+                # prime live widget values so inputs show imported data immediately
+                st.session_state["id_title"] = id_info["title"]
+                st.session_state["id_pi_name"] = id_info["pi_name"]
+                st.session_state["id_pi_email"] = id_info["pi_email"]
+                st.session_state["id_institution"] = id_info["institution"]
+                st.session_state["id_start_date"] = id_info["start_date"]
+                st.session_state["id_end_date"] = id_info["end_date"]
                 st.session_state["id_contact_name"] = id_info["contact_name"]
-                st.session_state["id_contact_email"]= id_info["contact_email"]
-                st.session_state["id_contact_phone"]= id_info["contact_phone"]
+                st.session_state["id_contact_email"] = id_info["contact_email"]
+                st.session_state["id_contact_phone"] = id_info["contact_phone"]
 
             # Remember we loaded this file content; prevents re-import on button clicks
             st.session_state["_resume_file_sig"] = file_sig
@@ -1805,9 +1809,9 @@ if uploaded_file is not None:
     except Exception as e:
         tabs[0].error(f"Could not parse uploaded Excel: {e}")
 
-# ===== TAB 2: Identification =====
+# ===== TAB 2: Project Overview =====
 with tabs[1]:
-    st.header("🪪 Project Identification")
+    st.header("🪪 Project Overview")
 
     # defaults
     if "id_info" not in st.session_state:
@@ -2797,7 +2801,7 @@ if tabs[6].button("Generate Excel Backup File"):
     if "Sheet" in wb.sheetnames:
         wb.remove(wb["Sheet"])
 
-    # --- Sheet 0: Identification (Project ID page) ---
+    # --- Sheet 0: Project Overview ---
     def _sum_budget_for_export():
         return sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
 
@@ -2818,7 +2822,7 @@ if tabs[6].button("Generate Excel Backup File"):
     outputs_count = len(st.session_state.get("outputs", []))
     kpis_count = len(st.session_state.get("kpis", []))
 
-    ws_id = wb.create_sheet("Identification", 0)  # put it first
+    ws_id = wb.create_sheet("Project Overview", 0)  # put it first
     ws_id.append(["Field", "Value"])
     ws_id.append(["Project title", proj_title])
     ws_id.append(["Principal Investigator (PI) name", pi_name])
