@@ -1487,7 +1487,7 @@ def _budget_unpack(row):
     )
 # ---------------- Tabs ----------------
 tabs = st.tabs([
-    "📘 Instructions",
+    "📘 Welcome & Instructions",
     "🪪 Project Overview",
     "🧱 Logframe",
     "🗂️ Workplan",
@@ -1496,19 +1496,22 @@ tabs = st.tabs([
     "📤 Export"
 ])
 
-# ===== TAB 1: Instructions =====
+# ===== TAB 1: Welcome & Instructions =====
 tabs[0].markdown(
     """
 # 📝 Welcome to the Falcon Awards Project Portal
 
-Please complete each section of your application:
+Please complete each section of your project:
 
 1. **Project Overview** – Fill project & contacts.
 2. **Logframe** – Add **Goal**, **Outcome**, **Outputs**, then **KPIs**.
 3. **Workplan** – Add **Activities** linked to Outputs/KPIs with dates.
 4. **Budget** – Add **Budget lines** linked to Activities.
 5. **Disbursement Schedule** – Add **KPI-Linked Milestones** with dates and amounts.
-6. **Export** – **Create Excel Backup** to save your progress for later editing and **Generate Word Document** with final documents.
+6. **Export** – Use the export tools as follows:  
+   - **Create a backup file (Excel):** You can do this at any stage to save your progress and continue working later.  
+   - **Generate a Project Design Document (Word):** Create a formatted project document to review how your application looks in report form.  
+   - **Generate a Project Package (ZIP):** At the final stage you will create a password-protected ZIP file for submission to GLIDE. *This feature is planned but not yet available in the portal.*  
 
 ### Definitions
 - **Goal**: The long-term vision (impact).
@@ -1520,8 +1523,6 @@ Please complete each section of your application:
 - **Assumptions**: External conditions necessary for success.
 - **Means of Verification (MoV)**: Where/how the KPI will be measured.
 - **Payment-linked indicator**: KPI that triggers funding release when achieved (optional).
-
-Once done, export your application as an Excel file.
 
 """
 )
