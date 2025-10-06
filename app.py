@@ -666,8 +666,9 @@ def build_logframe_docx():
     def _new_landscape_section(title):
         sec = doc.add_section(WD_SECTION_START.NEW_PAGE)
         sec.orientation = WD_ORIENT.LANDSCAPE
-        # swap page size
-        sec.page_width, sec.page_height = sec.page_height, sec.page_width
+        # Only swap dimensions if the section is still portrait-sized.
+        if sec.page_width < sec.page_height:
+            sec.page_width, sec.page_height = sec.page_height, sec.page_width
         _h1(title)
         return sec
 
