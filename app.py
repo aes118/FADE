@@ -1422,7 +1422,6 @@ div[data-testid="column"] label p { font-weight: 600; }
 CATEGORY_TREE = {
     "Personnel": [
         "Salaries & Wages",
-        "Benefits",
         "Temporary / Short-Term Staff"
     ],
 
@@ -1436,21 +1435,24 @@ CATEGORY_TREE = {
     ],
 
     "Travel & Transportation": [
-        "International Travel",
-        "Local Travel",
+        "Airfare",
+        "Travel insurance",
+        "Visa fees",
         "Accommodation & Lodging",
+        "Ground Transportation",
         "Per Diem / Allowances"
     ],
-
-    "Workshops, Training & Meetings": [
+    
+    "Events, Workshops, Training & Meetings": [
         "Venue Hire",
         "Facilitation & Trainer Fees",
         "Audio/Visual & Interpretation (on-site)",
         "Training / Workshop Materials",
         "Catering & Refreshments",
-        "Event Packages"
+        "Event Packages (e.g. entertainment, gifts, souvernirs, awards, etc.)",
+        "Per diem"
     ],
-
+    
     "Equipment & Technology": [
         "ICT Equipment (computers, phones, tablets)",
         "Software & Licenses",
@@ -1464,191 +1466,136 @@ CATEGORY_TREE = {
         "Printing & Dissemination",
         "Stationery & Office Supplies",
         "Safety / Field Gear",
-        "Lab / Medical Consumables",   # optional — only if relevant
+        "Lab / Medical Consumables",
         "Other Consumables"
     ],
 
     "Field Operations": [
-        "Community Materials (Printing & Dissemination)",
-        "Field Logistics & Distribution",
         "Transport & Vehicle Operations",
         "Warehousing & Storage",
         "Permits & Local Fees"
     ],
 
     "Communications & Advocacy": [
+        "Printing & Dissemination",
         "Media Campaigns",
         "Design & Branding",
         "Publications & Layout",
-        "Events & Campaigns",
         "Stakeholder Engagement / Public Relations"
     ],
-
-    "Subgrants & Partnerships": [
-        "Subgrants",
-        "Partner Agreements",
-        "Grants Management Fees"
-    ],
-
+    
     "Administrative / Direct Operating Costs": [
         "Office Rent & Utilities",
         "Project Communications (internet/phone)",
         "Insurance",
-        "Bank & Audit Fees",
         "General Admin & Shared Services"
     ],
 
     "Indirect Costs / Overheads": [
-        "Institutional Overhead (flat % as per donor policy)"
+        "Institutional Overhead (as per GLIDE policy)"
     ]
 }
 
 # Sub Category–driven Unit suggestions (bind only to Sub Category)
 SUBCATEGORY_UNIT_SUGGESTIONS = {
-    # Workshops, Training & Meetings
-    "Venue Hire":                              ["per day", "per room-day", "per event day"],
-    "Facilitation & Trainer Fees":             ["per day", "per consultant day", "per workshop day"],
-    "Audio/Visual & Interpretation (on-site)": ["per day", "per workshop day"],
-    "Training / Workshop Materials":           ["per participant", "per participant day", "per set"],
-    "Catering & Refreshments":                 ["per participant", "per workshop day", "per event day"],
-    "Event Packages":                          ["per event package"],
+    # Personnel
+    "Salaries & Wages": ["per hour", "per day", "per month", "per FTE-month"],
+    "Temporary / Short-Term Staff": ["per day", "per hour", "per contract"],
+    
+    # Events, Workshops, Training & Meetings
+    "Venue Hire":                              ["per day", "per event"],
+    "Facilitation & Trainer Fees":             ["per day", "per event"],
+    "Audio/Visual & Interpretation (on-site)": ["per day", "per event"],
+    "Training / Workshop Materials":           ["per participant", "per event"],
+    "Catering & Refreshments":                 ["per participant", "per event day", "per event"],
+    "Event Packages (e.g. entertainment, gifts, souvernirs, awards, etc.)": ["per event", "per person"],
+    "Per Diem / Allowances":                   ["per participant per day"],
 
     # Travel & Transportation
-    "International Travel":                    ["per round trip", "per visa", "per night"],
-    "Local Travel":                            ["per trip", "per km"],
+    "Airfare":                                 ["per individual"],
+    "Travel insurance":                        ["per individual"],
+    "Visa fees":                               ["per individual"],
     "Accommodation & Lodging":                 ["per night"],
-    "Per Diem / Allowances":                   ["per diem"],
+    "Ground Transportation":                   ["per person", "per trip", "per km"],
+    "Per Diem / Allowances":                   ["per participant per day"],
 
     # Equipment & Technology
-    "ICT Equipment (computers, phones, tablets)": ["per device", "per laptop", "per phone"],
-    "Software & Licenses":                     ["per software license", "per month", "per year"],
-    "Power & Connectivity (chargers, solar, batteries)": ["per item", "per set"],
+    "ICT Equipment (e.g., computers, phones, tablets)": ["per device"],
+    "Software & Licenses":                     ["per license", "per month", "per year"],
+    "Power & Connectivity (e.g., chargers, solar, batteries)": ["per item", "per set"],
     "Lab / Medical Equipment":                 ["per device"],
-    "Hosting & Maintenance":                   ["per month (hosting)", "per month"],
+    "Hosting & Maintenance":                   ["per month", "per year"],
 
     # Supplies & Materials
     "Training Materials":                      ["per participant", "per set", "per item"],
-    "Printing & Dissemination":                ["per copy", "per 100 copies", "per 1,000 copies", "per batch"],
+    "Printing & Dissemination":                ["per copy", "per batch"],
     "Stationery & Office Supplies":            ["per item", "per set", "per batch"],
-    "Safety / Field Gear":                     ["per set", "per item"],
+    "Safety / Field Gear":                     ["per set", "per item", "per person"],
     "Lab / Medical Consumables":               ["per item", "per batch"],
+    "Other Consumables":                       ["per item", "per pack", "per batch"],
 
     # Field Operations
-    "Community Materials (Printing & Dissemination)": ["per copy", "per 100 copies", "per 1,000 copies", "per batch"],
-    "Field Logistics & Distribution":          ["per distribution", "per vehicle-day"],
-    "Transport & Vehicle Operations":          ["per vehicle-day"],
-    "Warehousing & Storage":                   ["per warehouse-month"],
+    "Transport & Vehicle Operations":          ["per vehicle-day", "per trip"],
+    "Warehousing & Storage":                   ["per m²-month", "per pallet-month"],
     "Permits & Local Fees":                    ["per item", "lump sum"],
 
     # Communications & Advocacy
-    "Media Campaigns":                         ["per campaign", "per 30-second spot"],
+    "Printing & Dissemination":                ["per copy", "per 1,000 copies", "per batch"],
+    "Media Campaigns":                         ["per campaign", "per campaign day", "per 30-second spot"],
     "Design & Branding":                       ["per design"],
     "Publications & Layout":                   ["per report", "per page"],
-    "Events & Campaigns":                      ["per event day", "per campaign"],
     "Stakeholder Engagement / Public Relations": ["per event", "per campaign"],
 
     # Professional Services
-    "Consultancy / Advisory Services":         ["per day", "per consultant day", "per contract"],
+    "Consultancy / Advisory Services":         ["per day", "per contract"],
     "Research & Data Collection":              ["per day", "per survey", "per dataset"],
-    "Monitoring, Evaluation & Learning":       ["per evaluation", "per study", "per day"],
+    "Monitoring, Evaluation & Learning":       ["per day", "per evaluation", "per study"],
     "IT & Systems Development":                ["per day", "per contract"],
-    "Legal, Audit & Compliance":               ["per contract", "per report"],
-    "Translation & Interpretation":            ["per translation page", "per day"],
+    "Legal, Audit & Compliance":               ["per day", "per contract"],
+    "Translation & Interpretation":            ["per day", "per translation page", "per 1,000 words"],
 
     # Administrative / Direct Operating Costs
     "Office Rent & Utilities":                 ["per month"],
     "Project Communications (internet/phone)": ["per month"],
-    "Insurance":                               ["per year", "per month"],
-    "Bank & Audit Fees":                       ["per contract", "per report"],
+    "Insurance":                               ["per month", "per year"],
     "General Admin & Shared Services":         ["per month"],
 
-    # Subgrants & Partnerships
-    "Subgrants":                               ["per subgrant"],
-    "Partner Agreements":                      ["per partner agreement"],
-    "Grants Management Fees":                  ["lump sum"],
+    # Indirect Costs / Overheads
+    "Institutional Overhead (as per GLIDE policy)": ["lump sum"],
 }
 
-def unit_options_for_sub(subcategory: str) -> list[str]:
-    """
-    Return unit list driven by Sub Category, falling back to global UNIT_DROPDOWN; append 'Custom…'.
-    Dedupes while preserving order.
-    """
-    base = SUBCATEGORY_UNIT_SUGGESTIONS.get(subcategory, [])
+DEFAULT_UNIT_CHOICES = ["per item", "per unit"]
+UNIT_PLACEHOLDER = "Select unit"
+CUSTOM_UNIT_OPTION = "Custom…"
+
+SUBCATEGORY_UNITS = {
+    (category, sub): SUBCATEGORY_UNIT_SUGGESTIONS.get(sub, [])
+    for category, subs in CATEGORY_TREE.items()
+    for sub in subs
+}
+
+
+def unit_choices_for(category: str | None, subcategory: str) -> tuple[list[str], bool]:
+    """Return (unit options, has_defined_mapping) for the given category/subcategory."""
+    defined = SUBCATEGORY_UNITS.get((category, subcategory), []) if category is not None else []
+    has_defined = bool(defined)
+    base = defined if has_defined else SUBCATEGORY_UNIT_SUGGESTIONS.get(subcategory, [])
+    if not base:
+        base = DEFAULT_UNIT_CHOICES
     seen, ordered = set(), []
-    for u in base + UNIT_DROPDOWN:
+    for u in base:
         if u and u not in seen:
-            seen.add(u); ordered.append(u)
-    ordered.append("Custom…")
+            seen.add(u)
+            ordered.append(u)
+    return ordered, has_defined
+
+
+def unit_options_for_sub(subcategory: str, category: str | None = None, *, include_custom: bool = True) -> list[str]:
+    units, _ = unit_choices_for(category, subcategory)
+    ordered = list(units)
+    if include_custom and CUSTOM_UNIT_OPTION not in ordered:
+        ordered.append(CUSTOM_UNIT_OPTION)
     return ordered
-
-UNIT_DROPDOWN = [
-    # Time-based
-    "per hour",
-    "per day",
-    "per month",
-    "per year",
-    "per person-day",
-    "per person-month",
-
-    # People / participation
-    "per staff member",
-    "per participant",
-    "per trainee",
-    "per consultant day",
-
-    # Travel & lodging
-    "per trip",
-    "per round trip",
-    "per night",
-    "per visa",
-    "per km",
-    "per mile",
-    "per diem",  # daily allowance (amount per person per day)
-
-    # Events
-    "per meeting",
-    "per workshop",
-    "per workshop day",
-    "per training",
-    "per event day",
-    "per event package",
-    "per participant day",
-
-    # Deliverables / outputs
-    "per report",
-    "per study",
-    "per survey",
-    "per evaluation",
-    "per translation page",
-    "per dataset",
-
-    # Supplies & printing
-    "per item",
-    "per set",
-    "per batch",
-    "per copy",
-    "per 100 copies",
-    "per 1,000 copies",
-
-    # Equipment & technology
-    "per device",
-    "per laptop",
-    "per phone",
-    "per software license",
-    "per month (hosting)",
-
-    # Media / communications
-    "per 30-second spot",
-    "per campaign",
-
-    # Contracts / grants
-    "per contract",
-    "per subgrant",
-    "per partner agreement",
-
-    # Lump sum
-    "lump sum",
-]
 
 def subcategories_for(category: str):
     return CATEGORY_TREE.get(category, [])
@@ -2760,6 +2707,146 @@ with tabs[4]:
                 if a1.button("✏️", key=f"edit_{rid}", help="Edit line"):
                     st.session_state.edit_budget_row = rid
                     st.session_state.show_edit = True
+            subtotal += total
+
+        grand_total += subtotal
+        st.markdown(f"<div style='text-align:right; font-weight:700;'>Subtotal: USD {subtotal:,.2f}</div>",
+                    unsafe_allow_html=True)
+
+        # Per-activity add form (link is implicit by activity id)
+        with st.expander("➕ Add Budget Line to this Activity"):
+            form_prefix = f"add_{a['id']}"
+            item_key = f"{form_prefix}_item"
+            cat_key = f"{form_prefix}_cat"
+            sub_key = f"{form_prefix}_sub"
+            unit_key = f"{form_prefix}_unit"
+            unit_prev_sub_key = f"{form_prefix}_unit_prev_sub"
+            unit_reset_key = f"{form_prefix}_unit_reset"
+            unit_custom_key = f"{form_prefix}_unit_custom"
+
+            cat_options = list(CATEGORY_TREE.keys())
+            st.session_state.setdefault(cat_key, cat_options[0])
+
+            current_cat = st.session_state[cat_key]
+            sub_options = subcategories_for(current_cat) or ["(none)"]
+            if sub_key not in st.session_state or st.session_state[sub_key] not in sub_options:
+                st.session_state[sub_key] = sub_options[0] if sub_options else ""
+
+            st.session_state.setdefault(unit_key, UNIT_PLACEHOLDER)
+            st.session_state.setdefault(unit_reset_key, False)
+            st.session_state.setdefault(unit_custom_key, "")
+
+            # Row 1 — Line item spans full width
+            item = st.text_input("Line Item*", key=item_key)
+
+            # Row 2 — Category | Sub Category | Unit
+            r2_c1, r2_c2, r2_c3 = st.columns(3)
+            current_cat = r2_c1.selectbox("Cost Category*", cat_options,
+                                          index=cat_options.index(st.session_state[cat_key]), key=cat_key)
+
+            sub_options = subcategories_for(current_cat) or ["(none)"]
+            if st.session_state[sub_key] not in sub_options:
+                st.session_state[sub_key] = sub_options[0] if sub_options else ""
+            sub_index = sub_options.index(st.session_state[sub_key]) if st.session_state[sub_key] in sub_options else 0
+            sub = r2_c2.selectbox("Sub Category*", sub_options, index=sub_index, key=sub_key)
+
+            unit_values, unit_required = unit_choices_for(current_cat, sub)
+            allow_custom = not unit_required
+            option_candidates = [UNIT_PLACEHOLDER] + unit_values
+            if allow_custom:
+                option_candidates.append(CUSTOM_UNIT_OPTION)
+            unit_options = []
+            seen_unit_opts = set()
+            for opt in option_candidates:
+                if opt and opt not in seen_unit_opts:
+                    seen_unit_opts.add(opt)
+                    unit_options.append(opt)
+
+            current_selection = st.session_state.get(unit_key, UNIT_PLACEHOLDER)
+            if current_selection not in unit_options:
+                st.session_state[unit_key] = UNIT_PLACEHOLDER
+                st.session_state[unit_custom_key] = ""
+                st.session_state[unit_reset_key] = unit_required
+
+            prev_sub = st.session_state.get(unit_prev_sub_key)
+            if prev_sub is not None and prev_sub != sub:
+                next_selection = st.session_state.get(unit_key, UNIT_PLACEHOLDER)
+                custom_allowed_now = allow_custom
+                if (
+                    next_selection not in unit_options
+                    or (next_selection == CUSTOM_UNIT_OPTION and not custom_allowed_now)
+                ):
+                    st.session_state[unit_key] = UNIT_PLACEHOLDER
+                    st.session_state[unit_custom_key] = ""
+                    st.session_state[unit_reset_key] = unit_required
+                elif next_selection != UNIT_PLACEHOLDER or unit_required:
+                    # Retain choice; clear reset message if valid.
+                    st.session_state[unit_reset_key] = False
+            st.session_state[unit_prev_sub_key] = sub
+
+            unit_label = "Unit*" if unit_required else "Unit"
+            unit = r2_c3.selectbox(
+                unit_label,
+                unit_options,
+                index=unit_options.index(st.session_state.get(unit_key, UNIT_PLACEHOLDER)),
+                key=unit_key,
+            )
+            if unit == CUSTOM_UNIT_OPTION and allow_custom:
+                custom_value = r2_c3.text_input(
+                    " ", value=st.session_state.get(unit_custom_key, ""), key=unit_custom_key
+                )
+                st.session_state[unit_custom_key] = custom_value
+            else:
+                st.session_state[unit_custom_key] = ""
+
+            if unit_required and st.session_state.get(unit_reset_key):
+                if unit not in (UNIT_PLACEHOLDER, CUSTOM_UNIT_OPTION):
+                    st.session_state[unit_reset_key] = False
+                elif unit == CUSTOM_UNIT_OPTION and st.session_state.get(unit_custom_key, "").strip():
+                    st.session_state[unit_reset_key] = False
+
+            if unit_required and st.session_state.get(unit_reset_key):
+                r2_c3.caption("Unit reset — please choose a unit for this sub-category.")
+
+            # Row 3 — Unit Cost | Quantity
+            cost_col, qty_col = st.columns(2)
+            uc = cost_col.number_input("Unit Cost (USD)*", min_value=0.0, value=0.0, step=10.0, format="%.2f",
+                                       key=f"{form_prefix}_uc")
+            qty = qty_col.number_input("Qty*", min_value=0.0, value=1.0, step=1.0, format="%.2f",
+                                       key=f"{form_prefix}_qty")
+            line_total = float(uc) * float(qty)
+
+            if unit == UNIT_PLACEHOLDER:
+                final_unit = ""
+            elif unit == CUSTOM_UNIT_OPTION and allow_custom:
+                final_unit = st.session_state.get(unit_custom_key, "").strip()
+            else:
+                final_unit = unit
+
+            cL, cR = st.columns([0.20, 0.80])
+            if cL.button("Add line", key=f"add_line_btn_{a['id']}"):
+                if not item.strip():
+                    st.warning("Line Item is required.")
+                elif not current_cat or not sub or sub == "(none)":
+                    st.warning("Pick a Cost Category and Sub Category.")
+                elif unit_required and not final_unit:
+                    st.warning("Please choose a Unit for this Sub Category.")
+                elif uc <= 0 or qty <= 0:
+                    st.warning("Unit cost and quantity must be positive.")
+                else:
+                    st.session_state.budget.append({
+                        "id": generate_id(),
+                        "activity_id": a["id"],  # ← the link is here
+                        "item": item.strip(),
+                        "category": current_cat,
+                        "subcategory": sub,
+                        "unit": final_unit.strip(),
+                        "unit_cost": float(uc),
+                        "qty": float(qty),
+                        "currency": "USD",
+                        "total_usd": line_total,
+                    })
+                    st.session_state[unit_reset_key] = False
                     st.rerun()
                 if a2.button("🗑️", key=f"del_{rid}", help="Delete line"):
                     st.session_state.budget = [x for x in st.session_state.budget if x["id"] != rid]
@@ -2862,9 +2949,6 @@ with tabs[4]:
                 st.session_state[f"e_sub_{rid}"] = cur_subs[0]
             else:
                 st.session_state.setdefault(f"e_sub_{rid}", rec.get("subcategory"))
-            unit_init = rec.get("unit") if rec.get("unit") in UNIT_DROPDOWN else "Custom…"
-            st.session_state.setdefault(f"e_unit_choice_{rid}", unit_init)
-            st.session_state.setdefault(f"e_unit_custom_{rid}", ("" if unit_init != "Custom…" else rec.get("unit","")))
             st.session_state.setdefault(f"e_uc_{rid}", float(rec.get("unit_cost") or 0.0))
             st.session_state.setdefault(f"e_qty_{rid}", float(rec.get("qty") or 0.0))
 
@@ -2905,25 +2989,98 @@ with tabs[4]:
             # 4) Unit | Unit Cost | Quantity
             eu, euc, eqty = st.columns([0.42, 0.29, 0.29])
 
-            unit_opts_e = unit_options_for_sub(st.session_state[f"e_sub_{rid}"])
-            if st.session_state.get(f"e_unit_choice_{rid}") not in unit_opts_e:
-                st.session_state[f"e_unit_choice_{rid}"] = unit_opts_e[0] if unit_opts_e else "Custom…"
+            unit_choice_key = f"e_unit_choice_{rid}"
+            unit_custom_key = f"e_unit_custom_{rid}"
+            unit_prev_sub_key = f"e_unit_prev_sub_{rid}"
+            unit_reset_key = f"e_unit_reset_{rid}"
 
-            st.session_state[f"e_unit_choice_{rid}"] = eu.selectbox(
-                "Unit",
+            unit_values_e, unit_required_e = unit_choices_for(
+                st.session_state[f"e_cat_{rid}"], st.session_state[f"e_sub_{rid}"]
+            )
+            allow_custom_e = not unit_required_e
+            option_candidates_e = [UNIT_PLACEHOLDER] + unit_values_e
+            if allow_custom_e:
+                option_candidates_e.append(CUSTOM_UNIT_OPTION)
+
+            unit_opts_e = []
+            seen_opts_e = set()
+            for opt in option_candidates_e:
+                if opt and opt not in seen_opts_e:
+                    seen_opts_e.add(opt)
+                    unit_opts_e.append(opt)
+
+            existing_unit = rec.get("unit", "").strip()
+            if (
+                existing_unit
+                and existing_unit not in seen_opts_e
+                and st.session_state[f"e_sub_{rid}"] == rec.get("subcategory")
+            ):
+                insert_at = 1 if UNIT_PLACEHOLDER in unit_opts_e else 0
+                unit_opts_e.insert(insert_at, existing_unit)
+                seen_opts_e.add(existing_unit)
+
+            if unit_choice_key not in st.session_state:
+                default_choice = existing_unit or UNIT_PLACEHOLDER
+                if default_choice not in unit_opts_e:
+                    default_choice = UNIT_PLACEHOLDER
+                st.session_state[unit_choice_key] = default_choice
+            if unit_custom_key not in st.session_state:
+                st.session_state[unit_custom_key] = ""
+            st.session_state.setdefault(unit_reset_key, False)
+
+            if st.session_state[unit_choice_key] not in unit_opts_e:
+                st.session_state[unit_choice_key] = UNIT_PLACEHOLDER
+                st.session_state[unit_reset_key] = unit_required_e
+
+            prev_sub_edit = st.session_state.get(unit_prev_sub_key)
+            if prev_sub_edit is not None and prev_sub_edit != st.session_state[f"e_sub_{rid}"]:
+                selected_choice = st.session_state.get(unit_choice_key, UNIT_PLACEHOLDER)
+                if (
+                    selected_choice not in unit_opts_e
+                    or (selected_choice == CUSTOM_UNIT_OPTION and not allow_custom_e)
+                ):
+                    st.session_state[unit_choice_key] = UNIT_PLACEHOLDER
+                    st.session_state[unit_custom_key] = ""
+                    st.session_state[unit_reset_key] = unit_required_e
+                elif selected_choice != UNIT_PLACEHOLDER or unit_required_e:
+                    st.session_state[unit_reset_key] = False
+            st.session_state[unit_prev_sub_key] = st.session_state[f"e_sub_{rid}"]
+
+            st.session_state[unit_choice_key] = eu.selectbox(
+                "Unit" + ("*" if unit_required_e else ""),
                 unit_opts_e,
-                index=unit_opts_e.index(st.session_state[f"e_unit_choice_{rid}"])
-                if st.session_state[f"e_unit_choice_{rid}"] in unit_opts_e else len(unit_opts_e) - 1,
+                index=unit_opts_e.index(st.session_state[unit_choice_key]),
                 key=f"e_unit_choice_box_{rid}"
             )
-            if st.session_state[f"e_unit_choice_{rid}"] == "Custom…":
-                st.session_state[f"e_unit_custom_{rid}"] = eu.text_input(
-                    " ", value=st.session_state.get(f"e_unit_custom_{rid}", ""), key=f"e_unit_custom_key_{rid}"
+            if st.session_state[unit_choice_key] == CUSTOM_UNIT_OPTION and allow_custom_e:
+                st.session_state[unit_custom_key] = eu.text_input(
+                    " ", value=st.session_state.get(unit_custom_key, ""), key=f"e_unit_custom_key_{rid}"
                 )
+            else:
+                if st.session_state[unit_choice_key] != CUSTOM_UNIT_OPTION:
+                    st.session_state[unit_custom_key] = ""
+                if st.session_state.get(unit_reset_key) and st.session_state[unit_choice_key] not in (
+                    UNIT_PLACEHOLDER,
+                    CUSTOM_UNIT_OPTION,
+                ):
+                    st.session_state[unit_reset_key] = False
 
-            final_unit_e = (st.session_state[f"e_unit_custom_{rid}"].strip()
-                            if st.session_state[f"e_unit_choice_{rid}"] == "Custom…"
-                            else st.session_state[f"e_unit_choice_{rid}"])
+            if st.session_state.get(unit_reset_key):
+                if st.session_state[unit_choice_key] == CUSTOM_UNIT_OPTION:
+                    if st.session_state.get(unit_custom_key, "").strip():
+                        st.session_state[unit_reset_key] = False
+                elif st.session_state[unit_choice_key] != UNIT_PLACEHOLDER:
+                    st.session_state[unit_reset_key] = False
+
+            if unit_required_e and st.session_state.get(unit_reset_key):
+                eu.caption("Unit reset — please choose a unit for this sub-category.")
+
+            if st.session_state[unit_choice_key] == UNIT_PLACEHOLDER:
+                final_unit_e = ""
+            elif st.session_state[unit_choice_key] == CUSTOM_UNIT_OPTION and allow_custom_e:
+                final_unit_e = st.session_state.get(unit_custom_key, "").strip()
+            else:
+                final_unit_e = st.session_state[unit_choice_key]
 
             st.session_state[f"e_uc_{rid}"]  = euc.number_input(
                 "Unit Cost (USD)*", min_value=0.0, value=float(st.session_state[f"e_uc_{rid}"]),
@@ -2945,8 +3102,8 @@ with tabs[4]:
                     st.warning("Cost Category is required.")
                 elif not st.session_state[f"e_sub_{rid}"] or st.session_state[f"e_sub_{rid}"] == "(none)":
                     st.warning("Sub Category is required.")
-                elif not str(final_unit_e).strip():
-                    st.warning("Please select or type a Unit.")
+                elif unit_required_e and not str(final_unit_e).strip():
+                    st.warning("Please choose a Unit for this Sub Category.")
                 elif float(st.session_state[f"e_uc_{rid}"]) <= 0 or float(st.session_state[f"e_qty_{rid}"]) <= 0:
                     st.warning("Unit cost and quantity must be positive.")
                 else:
