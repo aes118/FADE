@@ -1506,9 +1506,8 @@ CATEGORY_TREE = {
 # Sub Category–driven Unit suggestions (bind only to Sub Category)
 SUBCATEGORY_UNIT_SUGGESTIONS = {
     # Personnel
-    "Salaries & Wages": ["per hour", "per day", "per month"],
-    "Benefits": ["per staff member", "per month", "per year"],
-    "Temporary / Short-Term Staff": ["per day", "per staff member", "per contract"],
+    "Salaries & Wages": ["per hour", "per day", "per month", "per FTE-month"],
+    "Temporary / Short-Term Staff": ["per day", "per hour", "per contract"],
     
     # Workshops, Training & Meetings
     "Venue Hire":                              ["per day", "per room-day", "per event day"],
@@ -1519,7 +1518,7 @@ SUBCATEGORY_UNIT_SUGGESTIONS = {
     "Event Packages":                          ["per event package"],
 
     # Travel & Transportation
-    "International Travel":                    ["per round trip", "per visa", "per night"],
+    "International Travel":                    ["per round trip", "per visa"],
     "Local Travel":                            ["per trip", "per km"],
     "Accommodation & Lodging":                 ["per night"],
     "Per Diem / Allowances":                   ["per diem"],
@@ -1529,7 +1528,7 @@ SUBCATEGORY_UNIT_SUGGESTIONS = {
     "Software & Licenses":                     ["per software license", "per month", "per year"],
     "Power & Connectivity (chargers, solar, batteries)": ["per item", "per set"],
     "Lab / Medical Equipment":                 ["per device"],
-    "Hosting & Maintenance":                   ["per month (hosting)", "per month"],
+    "Hosting & Maintenance":                   ["per month", "per year"],
 
     # Supplies & Materials
     "Training Materials":                      ["per participant", "per set", "per item"],
@@ -1537,13 +1536,13 @@ SUBCATEGORY_UNIT_SUGGESTIONS = {
     "Stationery & Office Supplies":            ["per item", "per set", "per batch"],
     "Safety / Field Gear":                     ["per set", "per item"],
     "Lab / Medical Consumables":               ["per item", "per batch"],
-    "Other Consumables": ["per item", "per batch"],
+    "Other Consumables": ["per item", "per pack", "per batch"],
 
     # Field Operations
     "Community Materials (Printing & Dissemination)": ["per copy", "per 100 copies", "per 1,000 copies", "per batch"],
     "Field Logistics & Distribution":          ["per distribution", "per vehicle-day"],
     "Transport & Vehicle Operations":          ["per vehicle-day"],
-    "Warehousing & Storage":                   ["per warehouse-month"],
+    "Warehousing & Storage":                   ["per m²-month", "per pallet-month"],
     "Permits & Local Fees":                    ["per item", "lump sum"],
 
     # Communications & Advocacy
@@ -1559,7 +1558,7 @@ SUBCATEGORY_UNIT_SUGGESTIONS = {
     "Monitoring, Evaluation & Learning":       ["per evaluation", "per study", "per day"],
     "IT & Systems Development":                ["per day", "per contract"],
     "Legal, Audit & Compliance":               ["per contract", "per report"],
-    "Translation & Interpretation":            ["per translation page", "per day"],
+    "Translation & Interpretation":            ["per translation page", "per day", "per 1,000 words"],
 
     # Administrative / Direct Operating Costs
     "Office Rent & Utilities":                 ["per month"],
