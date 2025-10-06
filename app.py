@@ -1483,12 +1483,6 @@ CATEGORY_TREE = {
         "Stakeholder Engagement / Public Relations"
     ],
 
-    "Subgrants & Partnerships": [
-        "Subgrants",
-        "Partner Agreements",
-        "Grants Management Fees"
-    ],
-
     "Administrative / Direct Operating Costs": [
         "Office Rent & Utilities",
         "Project Communications (internet/phone)",
@@ -1552,12 +1546,12 @@ SUBCATEGORY_UNIT_SUGGESTIONS = {
     "Stakeholder Engagement / Public Relations": ["per event", "per campaign"],
 
     # Professional Services
-    "Consultancy / Advisory Services":         ["per day", "per consultant day", "per contract"],
+    "Consultancy / Advisory Services":         ["per day", "per contract"],
     "Research & Data Collection":              ["per day", "per survey", "per dataset"],
-    "Monitoring, Evaluation & Learning":       ["per evaluation", "per study", "per day"],
+    "Monitoring, Evaluation & Learning":       ["per day", "per evaluation", "per study"],
     "IT & Systems Development":                ["per day", "per contract"],
-    "Legal, Audit & Compliance":               ["per contract", "per report"],
-    "Translation & Interpretation":            ["per translation page", "per day", "per 1,000 words"],
+    "Legal, Audit & Compliance":               ["per day", "per contract", "per report"],
+    "Translation & Interpretation":            ["per day", "per translation page", "per 1,000 words"],
 
     # Administrative / Direct Operating Costs
     "Office Rent & Utilities":                 ["per month"],
@@ -1565,11 +1559,6 @@ SUBCATEGORY_UNIT_SUGGESTIONS = {
     "Insurance":                               ["per year", "per month"],
     "Bank & Audit Fees":                       ["per contract", "per report"],
     "General Admin & Shared Services":         ["per month"],
-
-    # Subgrants & Partnerships
-    "Subgrants":                               ["per subgrant"],
-    "Partner Agreements":                      ["per partner agreement"],
-    "Grants Management Fees":                  ["lump sum"],
 
     # Indirect Costs / Overheads
     "Institutional Overhead (as per donor policy)": ["lump sum"],
