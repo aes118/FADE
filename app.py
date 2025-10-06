@@ -1435,22 +1435,24 @@ CATEGORY_TREE = {
     ],
 
     "Travel & Transportation": [
-        "International Travel",
-        "Local Travel",
+        "Airfare",
+        "Travel insurance",
+        "Visa fees",
         "Accommodation & Lodging",
+        "Ground Transportation",
         "Per Diem / Allowances"
     ],
-
+    
     "Events, Workshops, Training & Meetings": [
         "Venue Hire",
         "Facilitation & Trainer Fees",
         "Audio/Visual & Interpretation (on-site)",
         "Training / Workshop Materials",
         "Catering & Refreshments",
-        "Event Packages",
+        "Event Packages (e.g. entertainment, gifts, souvernirs, awards, etc.)",
         "Per diem"
     ],
-
+    
     "Equipment & Technology": [
         "ICT Equipment (computers, phones, tablets)",
         "Software & Licenses",
@@ -1464,31 +1466,28 @@ CATEGORY_TREE = {
         "Printing & Dissemination",
         "Stationery & Office Supplies",
         "Safety / Field Gear",
-        "Lab / Medical Consumables",   # optional — only if relevant
+        "Lab / Medical Consumables",
         "Other Consumables"
     ],
 
     "Field Operations": [
-        "Community Materials (Printing & Dissemination)",
-        "Field Logistics & Distribution",
         "Transport & Vehicle Operations",
         "Warehousing & Storage",
         "Permits & Local Fees"
     ],
 
     "Communications & Advocacy": [
+        "Printing & Dissemination",
         "Media Campaigns",
         "Design & Branding",
         "Publications & Layout",
-        "Events & Campaigns",
         "Stakeholder Engagement / Public Relations"
     ],
-
+    
     "Administrative / Direct Operating Costs": [
         "Office Rent & Utilities",
         "Project Communications (internet/phone)",
         "Insurance",
-        "Bank & Audit Fees",
         "General Admin & Shared Services"
     ],
 
