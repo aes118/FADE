@@ -756,11 +756,33 @@ def build_logframe_docx():
         _set_cell_text(c1, content_text or "")
         doc.add_paragraph("")
 
-    # ---- GOAL & OUTCOME banners (keep these)
-    if goal_text:
-        _add_banner_block("GOAL", goal_text)
-        if goal_assumptions_text:
-            _add_banner_block("Goal - Key Assumptions", goal_assumptions_text)
+    # ---- GOAL table with adjacent Key Assumptions column
+    if goal_text or goal_assumptions_text:
+        from docx.shared import Cm
+
+        tbl_goal = doc.add_table(rows=1, cols=2)
+        tbl_goal.style = "Table Grid"
+        tbl_goal.alignment = WD_TABLE_ALIGNMENT.LEFT
+        tbl_goal.autofit = True
+
+        labels = ("Goal", "Key Assumptions")
+        hdr = tbl_goal.rows[0]
+        for i, lab in enumerate(labels):
+            _set_cell_text(hdr.cells[i], lab, bold=True, white=True)
+            _shade(hdr.cells[i], PRIMARY_SHADE)
+        _repeat_header(hdr)
+
+        col_widths_goal = (Cm(12.0), Cm(12.0))
+        for i, width in enumerate(col_widths_goal):
+            hdr.cells[i].width = width
+            tbl_goal.columns[i].width = width
+
+        body = tbl_goal.add_row()
+        for i, width in enumerate(col_widths_goal):
+            body.cells[i].width = width
+        _set_cell_text(body.cells[0], goal_text or "—")
+        _set_cell_text(body.cells[1], goal_assumptions_text or "—")
+        doc.add_paragraph("")
 
     # ==== Outcome-level KPI table (separate) ====
     outcome_kpis = [k for k in st.session_state.get("kpis", []) if k.get("parent_level") == "Outcome"]
