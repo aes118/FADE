@@ -163,24 +163,71 @@ def compute_numbers(include_activities: bool = False):
     return out_num, kpi_num, act_num
 
 def _workplan_df():
-    """Return a tidy DF with Activity, Output, Start, End (rows that have both dates)."""
+    """Return a tidy DF with Activity/Output labels and metadata (rows that have both dates)."""
     import pandas as pd
+
     outs = {o["id"]: (o.get("name") or "Output") for o in st.session_state.get("outputs", [])}
+    out_nums, _, act_nums = compute_numbers(include_activities=True)
+
     rows = []
     for a in st.session_state.get("workplan", []):
         s, e = a.get("start"), a.get("end")
-        if s and e:
-            rows.append({
-                "Activity": a.get("name",""),
-                "Output": outs.get(a.get("output_id"), "(unassigned)"),
-                "Start": s,
-                "End": e,
-            })
+        if not (s and e):
+            continue
+
+        out_id = a.get("output_id")
+        out_name = outs.get(out_id, "(unassigned)")
+        out_num = out_nums.get(out_id, "")
+        if out_num and out_name:
+            out_label = f"Output {out_num} — {out_name}"
+        elif out_num:
+            out_label = f"Output {out_num}"
+        else:
+            out_label = out_name or "Output"
+
+        act_name = a.get("name") or ""
+        act_num = act_nums.get(a.get("id"), "")
+        if act_num and act_name:
+            act_label = f"Activity {act_num} — {act_name}"
+        elif act_num:
+            act_label = f"Activity {act_num}"
+        else:
+            act_label = act_name or "Activity"
+
+        owner = a.get("owner")
+        if owner is None:
+            owner = ""
+
+        rows.append({
+            "Activity": act_name,
+            "ActivityLabel": act_label,
+            "ActivityID": a.get("id"),
+            "Output": out_name,
+            "OutputLabel": out_label,
+            "OutputID": out_id,
+            "Owner": owner,
+            "Start": s,
+            "End": e,
+        })
+
     if not rows:
-        return pd.DataFrame(columns=["Activity","Output","Start","End"])
+        return pd.DataFrame(
+            columns=[
+                "Activity",
+                "ActivityLabel",
+                "ActivityID",
+                "Output",
+                "OutputLabel",
+                "OutputID",
+                "Owner",
+                "Start",
+                "End",
+            ]
+        )
+
     return (
         pd.DataFrame(rows)
-        .sort_values(["Output","Start","Activity"], kind="stable")
+        .sort_values(["Output", "Start", "ActivityLabel"], kind="stable")
         .reset_index(drop=True)
     )
 
@@ -205,12 +252,21 @@ def _draw_gantt(ax, df, *, show_today=False):
         ax.axis("off")
         return
 
+    if "ActivityLabel" not in df.columns:
+        df = df.assign(ActivityLabel=df["Activity"])
+    if "OutputLabel" not in df.columns:
+        df = df.assign(OutputLabel=df["Output"])
+
     # ---- Order outputs by earliest start for a logical reading order
     first_start = df.groupby("Output")["Start"].min().sort_values()
     ordered_outputs = first_start.index.tolist()
+    output_labels = {}
+    if "OutputLabel" in df.columns:
+        for out, lbl in zip(df["Output"], df["OutputLabel"]):
+            output_labels.setdefault(out, lbl)
     df = (
         df.assign(_out_order=df["Output"].map({o:i for i, o in enumerate(ordered_outputs)}))
-          .sort_values(["_out_order", "Start", "Activity"], kind="stable")
+          .sort_values(["_out_order", "Start", "ActivityLabel"], kind="stable")
           .drop(columns="_out_order")
           .reset_index(drop=True)
     )
@@ -238,7 +294,7 @@ def _draw_gantt(ax, df, *, show_today=False):
 
     # ---- Y axis: activities
     ax.set_yticks(y)
-    ax.set_yticklabels(df["Activity"], fontsize=9)
+    ax.set_yticklabels(df["ActivityLabel"], fontsize=9)
     ax.invert_yaxis()
     ax.set_ylabel("Activity")
 
@@ -275,7 +331,10 @@ def _draw_gantt(ax, df, *, show_today=False):
                 va="top", ha="center", fontsize=8, color="#666")
 
     # ---- Legend (bottom center), tidy spacing
-    handles = [Patch(facecolor=color_map[o], label=o) for o in ordered_outputs]
+    handles = [
+        Patch(facecolor=color_map[o], label=output_labels.get(o, o))
+        for o in ordered_outputs
+    ]
     ax.legend(
         handles=handles,
         title="Outputs",
@@ -765,22 +824,22 @@ def build_logframe_docx():
     _new_section("WORKPLAN")
 
     # Build tidy DF exactly as in the app
-    df_wp = _workplan_df()  # columns: Activity | Output | Start | End
+    df_wp = _workplan_df()  # includes Activity/Output labels, Owner, Start, End
 
-    # Header: same 4 columns as requested
-    t_act = doc.add_table(rows=1, cols=4)
+    # Header: Output | Activity | Owner | Start | End
+    t_act = doc.add_table(rows=1, cols=5)
     t_act.style = "Table Grid"
     t_act.alignment = WD_TABLE_ALIGNMENT.LEFT
 
     hdr = t_act.rows[0]
-    for i, lab in enumerate(("Output", "Activity", "Start", "End")):
+    for i, lab in enumerate(("Output", "Activity", "Owner", "Start", "End")):
         _set_cell_text(hdr.cells[i], lab, bold=True, white=True)
         _shade(hdr.cells[i], PRIMARY_SHADE)
     _repeat_header(hdr)
 
     from docx.shared import Cm
     # lock widths, similar proportions to logframe
-    COLW = (Cm(6.0), Cm(9.5), Cm(3.0), Cm(3.0))
+    COLW = (Cm(6.0), Cm(7.0), Cm(3.5), Cm(2.5), Cm(2.5))
     for i, w in enumerate(COLW):
         for r in t_act.rows:
             r.cells[i].width = w
@@ -806,9 +865,10 @@ def build_logframe_docx():
         _set_cell_text(row.cells[1], "No scheduled activities")
         _set_cell_text(row.cells[2], "—")
         _set_cell_text(row.cells[3], "—")
+        _set_cell_text(row.cells[4], "—")
     else:
         # 1) Stable within-group order: Start -> Activity
-        df_wp = df_wp.sort_values(["Start", "Activity"], kind="stable").reset_index(drop=True)
+        df_wp = df_wp.sort_values(["Start", "ActivityLabel"], kind="stable").reset_index(drop=True)
 
         # 2) Deterministic group order: by Output number (from logframe)
         def _out_order(name):
@@ -830,14 +890,32 @@ def build_logframe_docx():
                 for i, w in enumerate(COLW):
                     row.cells[i].width = w
                 # fill activity row
-                _set_cell_text(row.cells[1], str(r["Activity"]))
-                _set_cell_text(row.cells[2], r["Start"].strftime("%d/%b/%Y"))
-                _set_cell_text(row.cells[3], r["End"].strftime("%d/%b/%Y"))
+                _set_cell_text(row.cells[1], str(r["ActivityLabel"]))
+                owner_val = r.get("Owner", "")
+                if isinstance(owner_val, float):
+                    try:
+                        from math import isnan
+                        if isnan(owner_val):
+                            owner_val = ""
+                    except Exception:
+                        owner_val = ""
+                owner_text = str(owner_val).strip()
+                if not owner_text or owner_text.lower() == "nan":
+                    owner_text = "—"
+                _set_cell_text(row.cells[2], owner_text)
+                _set_cell_text(row.cells[3], r["Start"].strftime("%d/%b/%Y"))
+                _set_cell_text(row.cells[4], r["End"].strftime("%d/%b/%Y"))
 
             end_row = len(t_act.rows) - 1
             if end_row >= start_row:
                 merged = t_act.cell(start_row, 0).merge(t_act.cell(end_row, 0))
-                label = f"Output {name_to_num.get(out_name, '')} — {out_name}".strip(" —")
+                num = name_to_num.get(out_name, "")
+                if num and out_name:
+                    label = f"Output {num} — {out_name}"
+                elif num:
+                    label = f"Output {num}"
+                else:
+                    label = out_name or "Output"
                 _set_cell_text(merged, label)
 
     doc.add_paragraph("")  # a small gap after the table
