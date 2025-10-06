@@ -7,6 +7,7 @@ import uuid
 import base64
 import os
 import html, re
+from contextlib import contextmanager
 from html import escape
 from datetime import datetime, date
 import hashlib
@@ -1178,6 +1179,17 @@ def view_activity_readonly(a, label, id_to_output, id_to_kpi):
     )
 
     return view_logframe_element(body, kind="activity")
+
+
+@contextmanager
+def lf_card_container(*extra_classes: str):
+    """Render a div with the shared lf-card styling and always close it."""
+    classes = " ".join(["lf-card", *extra_classes]) if extra_classes else "lf-card"
+    st.markdown(f"<div class='{classes}'>", unsafe_allow_html=True)
+    try:
+        yield
+    finally:
+        st.markdown("</div>", unsafe_allow_html=True)
 
 def view_budget_item_card(row, id_to_output) -> str:
     """
@@ -2671,6 +2683,14 @@ with tabs[4]:
         if a["id"] not in st.session_state["_budget_activity_ids"]:
             continue
 
+        with lf_card_container("lf-card--activity"):
+
+            # Activity header
+            st.markdown(
+                f"<div class='lf-activity-title'>{escape(_act_label(a))}</div>",
+                unsafe_allow_html=True,
+            )
+
         st.markdown("<div class='lf-card lf-card--activity'>", unsafe_allow_html=True)
         try:
             # Activity header
@@ -2853,6 +2873,70 @@ with tabs[4]:
                     st.rerun()
 
                 subtotal += total
+
+            grand_total += subtotal
+            st.markdown(
+                f"<div style='text-align:right; font-weight:700;'>Subtotal: USD {subtotal:,.2f}</div>",
+                unsafe_allow_html=True,
+            )
+
+            # Per-activity add form (link is implicit by activity id)
+            with st.expander("➕ Add Budget Line to this Activity"):
+                c1, c2 = st.columns([0.60, 0.40])
+                item = c1.text_input("Line Item*", key=f"add_item_{a['id']}")
+                cat = c2.selectbox("Cost Category*", list(CATEGORY_TREE.keys()), key=f"add_cat_{a['id']}")
+                sub_opts = subcategories_for(cat) or ["(none)"]
+                sub = c2.selectbox("Sub Category*", sub_opts, key=f"add_sub_{a['id']}")
+
+                # Unit (use your dynamic Sub→Unit here if desired)
+                cU, cUC, cQ = st.columns([0.38, 0.31, 0.31])
+                unit = cU.selectbox("Unit", UNIT_DROPDOWN + ["Custom…"], key=f"add_unit_{a['id']}")
+                if unit == "Custom…":
+                    unit = cU.text_input(" ", key=f"add_unit_custom_{a['id']}")
+
+                uc = cUC.number_input(
+                    "Unit Cost (USD)*",
+                    min_value=0.0,
+                    value=0.0,
+                    step=10.0,
+                    format="%.2f",
+                    key=f"add_uc_{a['id']}",
+                )
+                qty = cQ.number_input(
+                    "Qty*",
+                    min_value=0.0,
+                    value=1.0,
+                    step=1.0,
+                    format="%.2f",
+                    key=f"add_qty_{a['id']}",
+                )
+                line_total = float(uc) * float(qty)
+
+                cL, cR = st.columns([0.20, 0.80])
+                if cL.button("Add line", key=f"add_line_btn_{a['id']}"):
+                    if not item.strip():
+                        st.warning("Line Item is required.")
+                    elif not cat or not sub or sub == "(none)":
+                        st.warning("Pick a Cost Category and Sub Category.")
+                    elif not str(unit).strip():
+                        st.warning("Pick or type a Unit.")
+                    elif uc <= 0 or qty <= 0:
+                        st.warning("Unit cost and quantity must be positive.")
+                    else:
+                        st.session_state.budget.append({
+                            "id": generate_id(),
+                            "activity_id": a["id"],  # ← the link is here
+                            "item": item.strip(),
+                            "category": cat,
+                            "subcategory": sub,
+                            "unit": unit.strip(),
+                            "unit_cost": float(uc),
+                            "qty": float(qty),
+                            "currency": "USD",
+                            "total_usd": line_total,
+                        })
+                        st.rerun()
+
 
             grand_total += subtotal
             st.markdown(
