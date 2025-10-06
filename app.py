@@ -7,6 +7,7 @@ import uuid
 import base64
 import os
 import html, re
+from contextlib import contextmanager
 from html import escape
 from datetime import datetime, date
 import hashlib
@@ -1184,6 +1185,17 @@ def view_activity_readonly(a, label, id_to_output, id_to_kpi):
 
     return view_logframe_element(body, kind="activity")
 
+
+@contextmanager
+def lf_card_container(*extra_classes: str):
+    """Render a div with the shared lf-card styling and always close it."""
+    classes = " ".join(["lf-card", *extra_classes]) if extra_classes else "lf-card"
+    st.markdown(f"<div class='{classes}'>", unsafe_allow_html=True)
+    try:
+        yield
+    finally:
+        st.markdown("</div>", unsafe_allow_html=True)
+
 def view_budget_item_card(row, id_to_output) -> str:
     """
     row: [OutputID, Item, Category, Unit, Qty, Unit Cost, Currency, Total]
@@ -1427,7 +1439,6 @@ div[data-testid="column"] label p { font-weight: 600; }
 CATEGORY_TREE = {
     "Personnel": [
         "Salaries & Wages",
-        "Benefits",
         "Temporary / Short-Term Staff"
     ],
 
@@ -1441,21 +1452,24 @@ CATEGORY_TREE = {
     ],
 
     "Travel & Transportation": [
-        "International Travel",
-        "Local Travel",
+        "Airfare",
+        "Travel insurance",
+        "Visa fees",
         "Accommodation & Lodging",
+        "Ground Transportation",
         "Per Diem / Allowances"
     ],
-
-    "Workshops, Training & Meetings": [
+    
+    "Events, Workshops, Training & Meetings": [
         "Venue Hire",
         "Facilitation & Trainer Fees",
         "Audio/Visual & Interpretation (on-site)",
         "Training / Workshop Materials",
         "Catering & Refreshments",
-        "Event Packages"
+        "Event Packages (e.g. entertainment, gifts, souvernirs, awards, etc.)",
+        "Per diem"
     ],
-
+    
     "Equipment & Technology": [
         "ICT Equipment (computers, phones, tablets)",
         "Software & Licenses",
@@ -1469,191 +1483,136 @@ CATEGORY_TREE = {
         "Printing & Dissemination",
         "Stationery & Office Supplies",
         "Safety / Field Gear",
-        "Lab / Medical Consumables",   # optional — only if relevant
+        "Lab / Medical Consumables",
         "Other Consumables"
     ],
 
     "Field Operations": [
-        "Community Materials (Printing & Dissemination)",
-        "Field Logistics & Distribution",
         "Transport & Vehicle Operations",
         "Warehousing & Storage",
         "Permits & Local Fees"
     ],
 
     "Communications & Advocacy": [
+        "Printing & Dissemination",
         "Media Campaigns",
         "Design & Branding",
         "Publications & Layout",
-        "Events & Campaigns",
         "Stakeholder Engagement / Public Relations"
     ],
-
-    "Subgrants & Partnerships": [
-        "Subgrants",
-        "Partner Agreements",
-        "Grants Management Fees"
-    ],
-
+    
     "Administrative / Direct Operating Costs": [
         "Office Rent & Utilities",
         "Project Communications (internet/phone)",
         "Insurance",
-        "Bank & Audit Fees",
         "General Admin & Shared Services"
     ],
 
     "Indirect Costs / Overheads": [
-        "Institutional Overhead (flat % as per donor policy)"
+        "Institutional Overhead (as per GLIDE policy)"
     ]
 }
 
 # Sub Category–driven Unit suggestions (bind only to Sub Category)
 SUBCATEGORY_UNIT_SUGGESTIONS = {
-    # Workshops, Training & Meetings
-    "Venue Hire":                              ["per day", "per room-day", "per event day"],
-    "Facilitation & Trainer Fees":             ["per day", "per consultant day", "per workshop day"],
-    "Audio/Visual & Interpretation (on-site)": ["per day", "per workshop day"],
-    "Training / Workshop Materials":           ["per participant", "per participant day", "per set"],
-    "Catering & Refreshments":                 ["per participant", "per workshop day", "per event day"],
-    "Event Packages":                          ["per event package"],
+    # Personnel
+    "Salaries & Wages": ["per hour", "per day", "per month", "per FTE-month"],
+    "Temporary / Short-Term Staff": ["per day", "per hour", "per contract"],
+    
+    # Events, Workshops, Training & Meetings
+    "Venue Hire":                              ["per day", "per event"],
+    "Facilitation & Trainer Fees":             ["per day", "per event"],
+    "Audio/Visual & Interpretation (on-site)": ["per day", "per event"],
+    "Training / Workshop Materials":           ["per participant", "per event"],
+    "Catering & Refreshments":                 ["per participant", "per event day", "per event"],
+    "Event Packages (e.g. entertainment, gifts, souvernirs, awards, etc.)": ["per event", "per person"],
+    "Per Diem / Allowances":                   ["per participant per day"],
 
     # Travel & Transportation
-    "International Travel":                    ["per round trip", "per visa", "per night"],
-    "Local Travel":                            ["per trip", "per km"],
+    "Airfare":                                 ["per individual"],
+    "Travel insurance":                        ["per individual"],
+    "Visa fees":                               ["per individual"],
     "Accommodation & Lodging":                 ["per night"],
-    "Per Diem / Allowances":                   ["per diem"],
+    "Ground Transportation":                   ["per person", "per trip", "per km"],
+    "Per Diem / Allowances":                   ["per participant per day"],
 
     # Equipment & Technology
-    "ICT Equipment (computers, phones, tablets)": ["per device", "per laptop", "per phone"],
-    "Software & Licenses":                     ["per software license", "per month", "per year"],
-    "Power & Connectivity (chargers, solar, batteries)": ["per item", "per set"],
+    "ICT Equipment (e.g., computers, phones, tablets)": ["per device"],
+    "Software & Licenses":                     ["per license", "per month", "per year"],
+    "Power & Connectivity (e.g., chargers, solar, batteries)": ["per item", "per set"],
     "Lab / Medical Equipment":                 ["per device"],
-    "Hosting & Maintenance":                   ["per month (hosting)", "per month"],
+    "Hosting & Maintenance":                   ["per month", "per year"],
 
     # Supplies & Materials
     "Training Materials":                      ["per participant", "per set", "per item"],
-    "Printing & Dissemination":                ["per copy", "per 100 copies", "per 1,000 copies", "per batch"],
+    "Printing & Dissemination":                ["per copy", "per batch"],
     "Stationery & Office Supplies":            ["per item", "per set", "per batch"],
-    "Safety / Field Gear":                     ["per set", "per item"],
+    "Safety / Field Gear":                     ["per set", "per item", "per person"],
     "Lab / Medical Consumables":               ["per item", "per batch"],
+    "Other Consumables":                       ["per item", "per pack", "per batch"],
 
     # Field Operations
-    "Community Materials (Printing & Dissemination)": ["per copy", "per 100 copies", "per 1,000 copies", "per batch"],
-    "Field Logistics & Distribution":          ["per distribution", "per vehicle-day"],
-    "Transport & Vehicle Operations":          ["per vehicle-day"],
-    "Warehousing & Storage":                   ["per warehouse-month"],
+    "Transport & Vehicle Operations":          ["per vehicle-day", "per trip"],
+    "Warehousing & Storage":                   ["per m²-month", "per pallet-month"],
     "Permits & Local Fees":                    ["per item", "lump sum"],
 
     # Communications & Advocacy
-    "Media Campaigns":                         ["per campaign", "per 30-second spot"],
+    "Printing & Dissemination":                ["per copy", "per 1,000 copies", "per batch"],
+    "Media Campaigns":                         ["per campaign", "per campaign day", "per 30-second spot"],
     "Design & Branding":                       ["per design"],
     "Publications & Layout":                   ["per report", "per page"],
-    "Events & Campaigns":                      ["per event day", "per campaign"],
     "Stakeholder Engagement / Public Relations": ["per event", "per campaign"],
 
     # Professional Services
-    "Consultancy / Advisory Services":         ["per day", "per consultant day", "per contract"],
+    "Consultancy / Advisory Services":         ["per day", "per contract"],
     "Research & Data Collection":              ["per day", "per survey", "per dataset"],
-    "Monitoring, Evaluation & Learning":       ["per evaluation", "per study", "per day"],
+    "Monitoring, Evaluation & Learning":       ["per day", "per evaluation", "per study"],
     "IT & Systems Development":                ["per day", "per contract"],
-    "Legal, Audit & Compliance":               ["per contract", "per report"],
-    "Translation & Interpretation":            ["per translation page", "per day"],
+    "Legal, Audit & Compliance":               ["per day", "per contract"],
+    "Translation & Interpretation":            ["per day", "per translation page", "per 1,000 words"],
 
     # Administrative / Direct Operating Costs
     "Office Rent & Utilities":                 ["per month"],
     "Project Communications (internet/phone)": ["per month"],
-    "Insurance":                               ["per year", "per month"],
-    "Bank & Audit Fees":                       ["per contract", "per report"],
+    "Insurance":                               ["per month", "per year"],
     "General Admin & Shared Services":         ["per month"],
 
-    # Subgrants & Partnerships
-    "Subgrants":                               ["per subgrant"],
-    "Partner Agreements":                      ["per partner agreement"],
-    "Grants Management Fees":                  ["lump sum"],
+    # Indirect Costs / Overheads
+    "Institutional Overhead (as per GLIDE policy)": ["lump sum"],
 }
 
-def unit_options_for_sub(subcategory: str) -> list[str]:
-    """
-    Return unit list driven by Sub Category, falling back to global UNIT_DROPDOWN; append 'Custom…'.
-    Dedupes while preserving order.
-    """
-    base = SUBCATEGORY_UNIT_SUGGESTIONS.get(subcategory, [])
+DEFAULT_UNIT_CHOICES = ["per item", "per unit"]
+UNIT_PLACEHOLDER = "Select unit"
+CUSTOM_UNIT_OPTION = "Custom…"
+
+SUBCATEGORY_UNITS = {
+    (category, sub): SUBCATEGORY_UNIT_SUGGESTIONS.get(sub, [])
+    for category, subs in CATEGORY_TREE.items()
+    for sub in subs
+}
+
+
+def unit_choices_for(category: str | None, subcategory: str) -> tuple[list[str], bool]:
+    """Return (unit options, has_defined_mapping) for the given category/subcategory."""
+    defined = SUBCATEGORY_UNITS.get((category, subcategory), []) if category is not None else []
+    has_defined = bool(defined)
+    base = defined if has_defined else SUBCATEGORY_UNIT_SUGGESTIONS.get(subcategory, [])
+    if not base:
+        base = DEFAULT_UNIT_CHOICES
     seen, ordered = set(), []
-    for u in base + UNIT_DROPDOWN:
+    for u in base:
         if u and u not in seen:
-            seen.add(u); ordered.append(u)
-    ordered.append("Custom…")
+            seen.add(u)
+            ordered.append(u)
+    return ordered, has_defined
+
+
+def unit_options_for_sub(subcategory: str, category: str | None = None, *, include_custom: bool = True) -> list[str]:
+    units, _ = unit_choices_for(category, subcategory)
+    ordered = list(units)
+    if include_custom and CUSTOM_UNIT_OPTION not in ordered:
+        ordered.append(CUSTOM_UNIT_OPTION)
     return ordered
-
-UNIT_DROPDOWN = [
-    # Time-based
-    "per hour",
-    "per day",
-    "per month",
-    "per year",
-    "per person-day",
-    "per person-month",
-
-    # People / participation
-    "per staff member",
-    "per participant",
-    "per trainee",
-    "per consultant day",
-
-    # Travel & lodging
-    "per trip",
-    "per round trip",
-    "per night",
-    "per visa",
-    "per km",
-    "per mile",
-    "per diem",  # daily allowance (amount per person per day)
-
-    # Events
-    "per meeting",
-    "per workshop",
-    "per workshop day",
-    "per training",
-    "per event day",
-    "per event package",
-    "per participant day",
-
-    # Deliverables / outputs
-    "per report",
-    "per study",
-    "per survey",
-    "per evaluation",
-    "per translation page",
-    "per dataset",
-
-    # Supplies & printing
-    "per item",
-    "per set",
-    "per batch",
-    "per copy",
-    "per 100 copies",
-    "per 1,000 copies",
-
-    # Equipment & technology
-    "per device",
-    "per laptop",
-    "per phone",
-    "per software license",
-    "per month (hosting)",
-
-    # Media / communications
-    "per 30-second spot",
-    "per campaign",
-
-    # Contracts / grants
-    "per contract",
-    "per subgrant",
-    "per partner agreement",
-
-    # Lump sum
-    "lump sum",
-]
 
 def subcategories_for(category: str):
     return CATEGORY_TREE.get(category, [])
@@ -2705,64 +2664,33 @@ with tabs[4]:
     activities = st.session_state.get("workplan", [])
     out_nums, _, act_nums = compute_numbers(include_activities=True)
     act_lookup = activity_label_map(act_nums)
-    act_menu = ["(none)"] + [act_lookup[aid] for aid in act_lookup]
 
-    def _activity_label(aid):
+    def _activity_label(aid: str | None) -> str:
         return act_lookup.get(aid, "(none)")
 
-
-    # --- preload budget containers from workplan and group existing lines by activity ---
+    # keep Budget “containers” in sync with the Workplan
     from collections import defaultdict
+    st.session_state.setdefault("_budget_activity_ids", set())
+    st.session_state["_budget_activity_ids"] = {a["id"] for a in st.session_state.get("workplan", [])}
 
-
-    def ensure_budget_containers_from_workplan():
-        """Keep the activity ids we should render in Budget (mirror the Workplan)."""
-        st.session_state.setdefault("_budget_activity_ids", set())
-        st.session_state["_budget_activity_ids"] = {a["id"] for a in st.session_state.get("workplan", [])}
-
-
-    ensure_budget_containers_from_workplan()
-
-    # Group the current lines by activity id
+    # group existing budget lines by activity id
     lines_by_act = defaultdict(list)
     for row in st.session_state.get("budget", []):
         lines_by_act[row.get("activity_id")].append(row)
 
-    # ---------- CSS ----------
+    # ---------- CSS (small tweaks) ----------
     st.markdown("""
     <style>
       div[data-testid="column"] label p { font-weight:600; }
-      /* wrap long select values & options */
       .stSelectbox div[role="combobox"] span,
       .stSelectbox [role="listbox"] div { white-space:normal !important; line-height:1.3 !important; }
       .stSelectbox div[aria-haspopup="listbox"]>div { white-space:normal !important; }
-
-      .form-card { border:1px solid rgba(0,0,0,.08); border-radius:12px; padding:14px; background:#fff; }
-      .total-chip { font-weight:700; padding:.30rem .55rem; background:#fff; border-radius:6px;
-                    border:1px solid rgba(0,0,0,.10); display:inline-block; white-space:nowrap; }
-
-      .summary-header { font-weight:700; color:#374151; padding: 6px 0 10px 0; border-bottom:2px solid #e5e7eb; }
-      # .summary-row    { padding:12px 0; border-bottom:1px solid #e5e7eb; }
-      .summary-row:nth-child(even){ background:#fafbff22; }
-      
-      /* Full-width divider under each row */
-      .budget-row-divider{
-      border-bottom: 1px solid #e5e7eb;
-      margin: 10px 0 8px;
+      .budget-cell{white-space:normal !important; line-height:1.35;}
+      .total-chip{
+        font-weight:700; padding:.30rem .55rem; background:#fff;
+        border-radius:6px; border:1px solid rgba(0,0,0,.10);
+        display:inline-block; white-space:nowrap;
       }
-    
-    /* Optional: make text wrap nicely */
-      .budget-cell{
-      white-space: normal !important;
-      line-height: 1.35;      
-      }
-    
-    /* Keep the total chip style you already have */
-    .total-chip{
-      font-weight:700; padding:.30rem .55rem; background:#fff;
-      border-radius:6px; border:1px solid rgba(0,0,0,.10);
-      display:inline-block; white-space:nowrap;
-    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -2770,34 +2698,22 @@ with tabs[4]:
     # GROUPED VIEW (Activity → line items → subtotal) + per-activity add form
     # =========================================================
 
-    st.markdown("### Current Budget (Summary)")
-
-    # optional row divider style to keep alignment with wrapped Activity names
-    st.markdown("""
-    <style>
-    .budget-row-divider{border-bottom:1px solid #e5e7eb; margin:10px 0 8px;}
-    .budget-cell{white-space:normal !important; line-height:1.35;}
-    .total-chip{font-weight:700;padding:.30rem .55rem;background:#fff;border-radius:6px;border:1px solid rgba(0,0,0,.10);white-space:nowrap;}
-    </style>
-    """, unsafe_allow_html=True)
-
-    _, _, act_nums = compute_numbers(include_activities=True)
-
-
-    def _act_label(a):
-        return format_activity_label(a, act_nums)
-
-
-    # Iterate activities in Workplan order (preloaded by ensure_budget_containers_from_workplan)
     grand_total = 0.0
+
     for a in st.session_state.get("workplan", []):
         if a["id"] not in st.session_state["_budget_activity_ids"]:
             continue
 
-        # Activity header
-        st.markdown(f"**{_act_label(a)}**")
+        # Activity header (inside yellow box)
+        st.markdown(
+            view_logframe_element(
+                f"<div class='lf-activity-title'>{escape(format_activity_label(a, act_nums))}</div>",
+                kind="activity"  # uses lf-card lf-card--activity
+            ),
+            unsafe_allow_html=True,
+        )
 
-        # Column headers (per activity)
+        # Budget table header (placed just below yellow box)
         h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([0.28, 0.18, 0.18, 0.12, 0.10, 0.06, 0.06, 0.08])
         h1.markdown("**Line Item**")
         h2.markdown("**Category**")
@@ -2813,80 +2729,163 @@ with tabs[4]:
         for r in lines_by_act.get(a["id"], []):
             rid = r["id"]
             l1, l2, l3, l4, l5, l6, l7, l8 = st.columns([0.28, 0.18, 0.18, 0.12, 0.10, 0.06, 0.06, 0.08])
-            l1.markdown(f"<div class='budget-cell'>{r.get('item', '—')}</div>", unsafe_allow_html=True)
+            l1.markdown(f"<div class='budget-cell'>{escape(r.get('item', '—'))}</div>", unsafe_allow_html=True)
             l2.write(r.get("category", "—"))
             l3.write(r.get("subcategory", "—"))
             l4.write(r.get("unit", "—"))
-            l5.write(f"{float(r.get('unit_cost') or 0.0):,.2f}")
-            l6.write(f"{float(r.get('qty') or 0.0):,.2f}")
-            total = float(r.get("total_usd") or (float(r.get("unit_cost") or 0.0) * float(r.get("qty") or 0.0)) or 0.0)
-            l7.write(f"{total:,.2f}")
-            a1, a2 = l8.columns(2)
-            if a1.button("✏️", key=f"edit_{rid}", help="Edit line"):
+
+            uc = float(r.get("unit_cost") or 0.0)
+            qty = float(r.get("qty") or 0.0)
+            tot = float(r.get("total_usd") or (uc * qty) or 0.0)
+
+            l5.write(f"{uc:,.2f}")
+            l6.write(f"{qty:,.2f}")
+            l7.write(f"{tot:,.2f}")
+
+            b_edit, b_del = l8.columns(2)
+            if b_edit.button("✏️", key=f"edit_{rid}", help="Edit line"):
                 st.session_state.edit_budget_row = rid
                 st.session_state.show_edit = True
-                st.rerun()
-            if a2.button("🗑️", key=f"del_{rid}", help="Delete line"):
+            if b_del.button("🗑️", key=f"del_{rid}", help="Delete line"):
                 st.session_state.budget = [x for x in st.session_state.budget if x["id"] != rid]
                 st.rerun()
 
-            subtotal += total
+            subtotal += tot
+
+        st.markdown(
+            f"<div style='text-align:right; font-weight:700;'>Subtotal: USD {subtotal:,.2f}</div>",
+            unsafe_allow_html=True,
+        )
 
         grand_total += subtotal
-        st.markdown(f"<div style='text-align:right; font-weight:700;'>Subtotal: USD {subtotal:,.2f}</div>",
-                    unsafe_allow_html=True)
 
-        # Per-activity add form (link is implicit by activity id)
+            # -------- Add new line to THIS activity (uses dynamic unit mapping) --------
         with st.expander("➕ Add Budget Line to this Activity"):
-            c1, c2 = st.columns([0.60, 0.40])
-            item = c1.text_input("Line Item*", key=f"add_item_{a['id']}")
-            cat = c2.selectbox("Cost Category*", list(CATEGORY_TREE.keys()), key=f"add_cat_{a['id']}")
-            sub_opts = subcategories_for(cat) or ["(none)"]
-            sub = c2.selectbox("Sub Category*", sub_opts, key=f"add_sub_{a['id']}")
+            form_prefix = f"add_{a['id']}"
+            item_key       = f"{form_prefix}_item"
+            cat_key        = f"{form_prefix}_cat"
+            sub_key        = f"{form_prefix}_sub"
+            unit_choice_key   = f"{form_prefix}_unit_choice"
+            unit_custom_key   = f"{form_prefix}_unit_custom"
+            unit_prev_sub_key = f"{form_prefix}_unit_prev_sub"
+            unit_reset_key    = f"{form_prefix}_unit_reset"
 
-            # Unit (use your dynamic Sub→Unit here if desired)
-            cU, cUC, cQ = st.columns([0.38, 0.31, 0.31])
-            unit = cU.selectbox("Unit", UNIT_DROPDOWN + ["Custom…"], key=f"add_unit_{a['id']}")
-            if unit == "Custom…":
-                unit = cU.text_input(" ", key=f"add_unit_custom_{a['id']}")
+            # Category
+            cat_options = list(CATEGORY_TREE.keys())
+            st.session_state.setdefault(cat_key, cat_options[0])
+            current_cat = st.session_state[cat_key]
 
-            uc = cUC.number_input("Unit Cost (USD)*", min_value=0.0, value=0.0, step=10.0, format="%.2f",
-                                  key=f"add_uc_{a['id']}")
-            qty = cQ.number_input("Qty*", min_value=0.0, value=1.0, step=1.0, format="%.2f", key=f"add_qty_{a['id']}")
+            # Sub-category (dependent)
+            sub_options = subcategories_for(current_cat) or ["(none)"]
+            if sub_key not in st.session_state or st.session_state[sub_key] not in sub_options:
+                st.session_state[sub_key] = sub_options[0] if sub_options else ""
+            current_sub = st.session_state[sub_key]
+
+            # Unit options (from your mapping)
+            unit_values, unit_required = unit_choices_for(current_cat, current_sub)
+            allow_custom = not unit_required
+
+            # Build unit choices list
+            unit_options = ["Select unit"] + list(dict.fromkeys(unit_values))  # de-dupe, preserve order
+            if allow_custom:
+                unit_options.append("Custom…")
+
+            st.session_state.setdefault(unit_choice_key, "Select unit")
+            st.session_state.setdefault(unit_custom_key, "")
+            st.session_state.setdefault(unit_prev_sub_key, current_sub)
+            st.session_state.setdefault(unit_reset_key, False)
+
+            # Reset unit if subcategory changed and previous selection is invalid
+            if st.session_state[unit_prev_sub_key] != current_sub:
+                sel = st.session_state[unit_choice_key]
+                if sel not in unit_options or (sel == "Custom…" and not allow_custom):
+                    st.session_state[unit_choice_key] = "Select unit"
+                    st.session_state[unit_custom_key] = ""
+                    st.session_state[unit_reset_key]  = unit_required
+                else:
+                    st.session_state[unit_reset_key] = False
+                st.session_state[unit_prev_sub_key] = current_sub
+
+            # Form rows
+            item = st.text_input("Line Item*", key=item_key)
+
+            r2_c1, r2_c2, r2_c3 = st.columns(3)
+            current_cat = r2_c1.selectbox("Cost Category*", cat_options,
+                                          index=cat_options.index(st.session_state[cat_key]), key=cat_key)
+
+            sub_options = subcategories_for(current_cat) or ["(none)"]
+            if st.session_state[sub_key] not in sub_options:
+                st.session_state[sub_key] = sub_options[0] if sub_options else ""
+            current_sub = r2_c2.selectbox("Sub Category*", sub_options,
+                                          index=sub_options.index(st.session_state[sub_key]), key=sub_key)
+
+            # refresh unit choices after any category/sub change
+            unit_values, unit_required = unit_choices_for(current_cat, current_sub)
+            allow_custom = not unit_required
+            unit_options = ["Select unit"] + list(dict.fromkeys(unit_values))
+            if allow_custom:
+                unit_options.append("Custom…")
+            unit_label = "Unit*" if unit_required else "Unit"
+            chosen = r2_c3.selectbox(unit_label, unit_options,
+                                     index=unit_options.index(st.session_state[unit_choice_key]),
+                                     key=unit_choice_key)
+            custom_unit = ""
+            if chosen == "Custom…" and allow_custom:
+                custom_unit = r2_c3.text_input(" ", key=unit_custom_key)
+            elif chosen != "Custom…":
+                st.session_state[unit_custom_key] = ""
+
+            if unit_required and st.session_state.get(unit_reset_key):
+                r2_c3.caption("Unit reset — please choose a unit for this sub-category.")
+
+            # Cost & quantity
+            cL, cR = st.columns(2)
+            uc  = cL.number_input("Unit Cost (USD)*", min_value=0.0, value=0.0, step=10.0, format="%.2f",
+                                  key=f"{form_prefix}_uc")
+            qty = cR.number_input("Qty*", min_value=0.0, value=1.0, step=1.0, format="%.2f",
+                                  key=f"{form_prefix}_qty")
             line_total = float(uc) * float(qty)
 
-            cL, cR = st.columns([0.20, 0.80])
-            if cL.button("Add line", key=f"add_line_btn_{a['id']}"):
+            # Determine final unit string
+            if chosen == "Select unit":
+                final_unit = ""
+            elif chosen == "Custom…" and allow_custom:
+                final_unit = (custom_unit or "").strip()
+            else:
+                final_unit = chosen
+
+            left, right = st.columns([0.20, 0.80])
+            if left.button("Add line", key=f"add_line_btn_{a['id']}"):
                 if not item.strip():
                     st.warning("Line Item is required.")
-                elif not cat or not sub or sub == "(none)":
+                elif not current_cat or not current_sub or current_sub == "(none)":
                     st.warning("Pick a Cost Category and Sub Category.")
-                elif not str(unit).strip():
-                    st.warning("Pick or type a Unit.")
+                elif unit_required and not final_unit:
+                    st.warning("Please choose a Unit for this Sub Category.")
                 elif uc <= 0 or qty <= 0:
                     st.warning("Unit cost and quantity must be positive.")
                 else:
                     st.session_state.budget.append({
                         "id": generate_id(),
-                        "activity_id": a["id"],  # ← the link is here
+                        "activity_id": a["id"],
                         "item": item.strip(),
-                        "category": cat,
-                        "subcategory": sub,
-                        "unit": unit.strip(),
+                        "category": current_cat,
+                        "subcategory": current_sub,
+                        "unit": final_unit,
                         "unit_cost": float(uc),
                         "qty": float(qty),
                         "currency": "USD",
                         "total_usd": line_total,
                     })
+                    st.session_state[unit_reset_key] = False
                     st.rerun()
 
-            cR.markdown(f"<div style='text-align:right; font-weight:700;'>USD {line_total:,.2f}</div>",
-                        unsafe_allow_html=True)
+            right.markdown(
+                f"<div style='text-align:right;'><span class='total-chip'>USD {line_total:,.2f}</span></div>",
+                unsafe_allow_html=True,
+            )
 
-        # one full-width divider per activity
-        st.markdown("<div class='budget-row-divider'></div>", unsafe_allow_html=True)
-
-    # Grand total
+    # Grand total for the whole budget
     st.markdown(f"**Total: USD {grand_total:,.2f}**")
     st.caption(footer_note)
 
@@ -2899,9 +2898,7 @@ with tabs[4]:
             st.markdown("---")
             st.subheader("Edit budget line")
 
-            # local state keys per-record
             rid = rec["id"]
-            # initialize controlled values
             st.session_state.setdefault(f"e_item_{rid}", rec.get("item",""))
             st.session_state.setdefault(f"e_act_lbl_{rid}", _activity_label(rec.get("activity_id")))
             default_cat = rec.get("category") if rec.get("category") in CATEGORY_TREE else None
@@ -2911,12 +2908,10 @@ with tabs[4]:
             # ensure current sub is in list
             cur_subs = subcategories_for(st.session_state[f"e_cat_{rid}"]) or ["(none)"]
             if rec.get("subcategory") not in cur_subs:
-                st.session_state[f"e_sub_{rid}"] = cur_subs[0]
+                st.session_state.setdefault(f"e_sub_{rid}", cur_subs[0])
             else:
                 st.session_state.setdefault(f"e_sub_{rid}", rec.get("subcategory"))
-            unit_init = rec.get("unit") if rec.get("unit") in UNIT_DROPDOWN else "Custom…"
-            st.session_state.setdefault(f"e_unit_choice_{rid}", unit_init)
-            st.session_state.setdefault(f"e_unit_custom_{rid}", ("" if unit_init != "Custom…" else rec.get("unit","")))
+
             st.session_state.setdefault(f"e_uc_{rid}", float(rec.get("unit_cost") or 0.0))
             st.session_state.setdefault(f"e_qty_{rid}", float(rec.get("qty") or 0.0))
 
@@ -2926,12 +2921,12 @@ with tabs[4]:
 
             st.markdown("<div class='form-card'>", unsafe_allow_html=True)
 
-            # 1) Line Item
             st.session_state[f"e_item_{rid}"] = st.text_area(
                 "Line Item*", value=st.session_state[f"e_item_{rid}"], height=48, key=f"e_item_key_{rid}"
             )
 
-            # 2) Linked Activity
+            # Linked Activity
+            act_menu = ["(none)"] + [act_lookup[aid] for aid in act_lookup]
             st.session_state[f"e_act_lbl_{rid}"] = st.selectbox(
                 "Linked Activity (optional)", act_menu,
                 index=act_menu.index(st.session_state[f"e_act_lbl_{rid}"])
@@ -2939,7 +2934,7 @@ with tabs[4]:
             new_act_id = None if st.session_state[f"e_act_lbl_{rid}"] == "(none)" else \
                 next(aid for aid, lab in act_lookup.items() if lab == st.session_state[f"e_act_lbl_{rid}"])
 
-            # 3) Category | Sub-Category (dependent)
+            # Category | Sub-Category
             ec, es = st.columns(2)
             cat_options = list(CATEGORY_TREE.keys())
             current_cat = st.session_state.get(f"e_cat_{rid}")
@@ -2961,28 +2956,70 @@ with tabs[4]:
                 key=f"e_sub_key_{rid}"
             )
 
-            # 4) Unit | Unit Cost | Quantity
+            # Unit | Unit Cost | Quantity
             eu, euc, eqty = st.columns([0.42, 0.29, 0.29])
 
-            unit_opts_e = unit_options_for_sub(st.session_state[f"e_sub_{rid}"])
-            if st.session_state.get(f"e_unit_choice_{rid}") not in unit_opts_e:
-                st.session_state[f"e_unit_choice_{rid}"] = unit_opts_e[0] if unit_opts_e else "Custom…"
+            unit_choice_key = f"e_unit_choice_{rid}"
+            unit_custom_key = f"e_unit_custom_{rid}"
+            unit_prev_sub_key = f"e_unit_prev_sub_{rid}"
+            unit_reset_key = f"e_unit_reset_{rid}"
 
-            st.session_state[f"e_unit_choice_{rid}"] = eu.selectbox(
-                "Unit",
-                unit_opts_e,
-                index=unit_opts_e.index(st.session_state[f"e_unit_choice_{rid}"])
-                if st.session_state[f"e_unit_choice_{rid}"] in unit_opts_e else len(unit_opts_e) - 1,
-                key=f"e_unit_choice_box_{rid}"
+            unit_values_e, unit_required_e = unit_choices_for(
+                st.session_state[f"e_cat_{rid}"], st.session_state[f"e_sub_{rid}"]
             )
-            if st.session_state[f"e_unit_choice_{rid}"] == "Custom…":
-                st.session_state[f"e_unit_custom_{rid}"] = eu.text_input(
-                    " ", value=st.session_state.get(f"e_unit_custom_{rid}", ""), key=f"e_unit_custom_key_{rid}"
-                )
+            allow_custom_e = not unit_required_e
+            unit_opts_e = ["Select unit"] + list(dict.fromkeys(unit_values_e))
+            if allow_custom_e:
+                unit_opts_e.append("Custom…")
 
-            final_unit_e = (st.session_state[f"e_unit_custom_{rid}"].strip()
-                            if st.session_state[f"e_unit_choice_{rid}"] == "Custom…"
-                            else st.session_state[f"e_unit_choice_{rid}"])
+            # Seed the unit selector with the existing value, if it’s not part of options
+            existing_unit = (rec.get("unit") or "").strip()
+            if existing_unit and existing_unit not in unit_opts_e:
+                unit_opts_e.insert(1, existing_unit)
+
+            if unit_choice_key not in st.session_state:
+                default_choice = existing_unit or "Select unit"
+                if default_choice not in unit_opts_e:
+                    default_choice = "Select unit"
+                st.session_state[unit_choice_key] = default_choice
+            st.session_state.setdefault(unit_custom_key, "")
+            st.session_state.setdefault(unit_prev_sub_key, st.session_state[f"e_sub_{rid}"])
+            st.session_state.setdefault(unit_reset_key, False)
+
+            # reset if sub changed
+            if st.session_state[unit_prev_sub_key] != st.session_state[f"e_sub_{rid}"]:
+                sel = st.session_state[unit_choice_key]
+                if sel not in unit_opts_e or (sel == "Custom…" and not allow_custom_e):
+                    st.session_state[unit_choice_key] = "Select unit"
+                    st.session_state[unit_custom_key] = ""
+                    st.session_state[unit_reset_key]  = unit_required_e
+                else:
+                    st.session_state[unit_reset_key] = False
+                st.session_state[unit_prev_sub_key] = st.session_state[f"e_sub_{rid}"]
+
+            st.session_state[unit_choice_key] = eu.selectbox(
+                "Unit" + ("*" if unit_required_e else ""), unit_opts_e,
+                index=unit_opts_e.index(st.session_state[unit_choice_key]), key=f"e_unit_choice_box_{rid}"
+            )
+            if st.session_state[unit_choice_key] == "Custom…" and allow_custom_e:
+                st.session_state[unit_custom_key] = eu.text_input(" ", value=st.session_state[unit_custom_key],
+                                                                  key=f"e_unit_custom_key_{rid}")
+            else:
+                if st.session_state[unit_choice_key] != "Custom…":
+                    st.session_state[unit_custom_key] = ""
+                if st.session_state.get(unit_reset_key) and st.session_state[unit_choice_key] not in ("Select unit","Custom…"):
+                    st.session_state[unit_reset_key] = False
+
+            if unit_required_e and st.session_state.get(unit_reset_key):
+                eu.caption("Unit reset — please choose a unit for this sub-category.")
+
+            # Final unit value
+            if st.session_state[unit_choice_key] == "Select unit":
+                final_unit_e = ""
+            elif st.session_state[unit_choice_key] == "Custom…" and allow_custom_e:
+                final_unit_e = (st.session_state.get(unit_custom_key, "") or "").strip()
+            else:
+                final_unit_e = st.session_state[unit_choice_key]
 
             st.session_state[f"e_uc_{rid}"]  = euc.number_input(
                 "Unit Cost (USD)*", min_value=0.0, value=float(st.session_state[f"e_uc_{rid}"]),
@@ -2994,18 +3031,16 @@ with tabs[4]:
             )
             new_total = float(st.session_state[f"e_uc_{rid}"]) * float(st.session_state[f"e_qty_{rid}"])
 
-            # footer: Save + live total
             sL, sR = st.columns([0.30, 0.70])
             if sL.button("Save", key=f"e_save_{rid}"):
-                # validate
                 if not st.session_state[f"e_item_{rid}"].strip():
                     st.warning("Line Item is required.")
                 elif not st.session_state[f"e_cat_{rid}"]:
                     st.warning("Cost Category is required.")
                 elif not st.session_state[f"e_sub_{rid}"] or st.session_state[f"e_sub_{rid}"] == "(none)":
                     st.warning("Sub Category is required.")
-                elif not str(final_unit_e).strip():
-                    st.warning("Please select or type a Unit.")
+                elif unit_required_e and not str(final_unit_e).strip():
+                    st.warning("Please choose a Unit for this Sub Category.")
                 elif float(st.session_state[f"e_uc_{rid}"]) <= 0 or float(st.session_state[f"e_qty_{rid}"]) <= 0:
                     st.warning("Unit cost and quantity must be positive.")
                 else:
@@ -3022,11 +3057,12 @@ with tabs[4]:
                     st.session_state.show_edit = False
                     st.session_state.edit_budget_row = None
                     st.rerun()
-            with sR:
-                st.markdown(f"<div style='text-align:right;'><span class='total-chip'>USD {new_total:,.2f}</span></div>",
-                            unsafe_allow_html=True)
 
-            # Cancel button
+            sR.markdown(
+                f"<div style='text-align:right;'><span class='total-chip'>USD {new_total:,.2f}</span></div>",
+                unsafe_allow_html=True,
+            )
+
             if st.button("Cancel", key=f"e_cancel_{rid}"):
                 st.session_state.show_edit = False
                 st.session_state.edit_budget_row = None
