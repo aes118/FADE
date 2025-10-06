@@ -654,16 +654,16 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     if len(doc.sections) == 0:
         doc.add_section(WD_SECTION_START.NEW_PAGE)
 
-    # Now it's safe to access and set orientation
-    first_section = doc.sections[0]
-    _set_orientation(first_section, WD_ORIENT.PORTRAIT)
-
     def _set_orientation(section, orientation):
         section.orientation = orientation
         if orientation == WD_ORIENT.LANDSCAPE and section.page_width < section.page_height:
             section.page_width, section.page_height = section.page_height, section.page_width
         if orientation == WD_ORIENT.PORTRAIT and section.page_width > section.page_height:
             section.page_width, section.page_height = section.page_height, section.page_width
+
+    # Now it's safe to access and set orientation
+    first_section = doc.sections[0]
+    _set_orientation(first_section, WD_ORIENT.PORTRAIT)
 
     def _shade(cell, hex_fill):
         tcPr = cell._tc.get_or_add_tcPr()
@@ -764,10 +764,10 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         ("Main Contact person (Optional)", id_info.get("contact_name", "")),
         ("Main Contact email (Optional)", id_info.get("contact_email", "")),
         ("Contact phone (Optional)", id_info.get("contact_phone", "")),
-        ("Total Funding requested (From Budget)", f"USD {budget_total:,.2f}"),
-        ("# Outputs (read-only; count from Logframe)", str(outputs_count)),
-        ("# KPIs (read-only; count from Logframe)", str(kpis_count)),
-        ("# Activities (read-only; count from Workplan)", str(activities_count)),
+        ("Total funding requested (From Budget)", f"USD {budget_total:,.2f}"),
+        ("# Outputs (From Logframe)", str(outputs_count)),
+        ("# KPIs (From Logframe)", str(kpis_count)),
+        ("# Activities (From Workplan)", str(activities_count)),
     ]
 
     overview_table = doc.add_table(rows=len(overview_rows), cols=2)
@@ -780,10 +780,14 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         overview_table.columns[idx].width = width
 
     for row_idx, (label, value) in enumerate(overview_rows):
-        _set_cell_text(overview_table.cell(row_idx, 0), str(label), bold=True)
+        # Left column: shaded + white text (same PRIMARY_SHADE used elsewhere)
+        _set_cell_text(overview_table.cell(row_idx, 0), str(label), bold=True, white=True)
+        _shade(overview_table.cell(row_idx, 0), PRIMARY_SHADE)
+
+        # Right column: normal
         _set_cell_text(overview_table.cell(row_idx, 1), _s(value))
 
-    doc.add_paragraph("")
+    doc.add_page_break()
     _h1("Logframe")
 
     goal = st.session_state.impacts[0] if st.session_state.get("impacts") else {}
@@ -953,8 +957,10 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         doc.add_paragraph("No activities defined yet.")
     else:
         df_wp = df_wp.copy()
-        df_wp["Start"] = df_wp["Start"].dt.strftime("%d/%b/%Y")
-        df_wp["End"] = df_wp["End"].dt.strftime("%d/%b/%Y")
+        df_wp["Start"] = pd.to_datetime(df_wp["Start"], errors="coerce").dt.strftime("%d/%b/%Y")
+        df_wp["End"] = pd.to_datetime(df_wp["End"], errors="coerce").dt.strftime("%d/%b/%Y")
+        df_wp["Start"] = df_wp["Start"].fillna("")
+        df_wp["End"] = df_wp["End"].fillna("")
 
         col_widths_act = (Cm(5.5), Cm(6.4), Cm(4.6), Cm(3.0), Cm(3.0))
         t_act = doc.add_table(rows=1, cols=5)
@@ -2100,31 +2106,6 @@ with tabs[1]:
     outputs_count = len(st.session_state.get("outputs", []))
     kpis_count = len(st.session_state.get("kpis", []))
     activities_count = len(st.session_state.get("workplan", []))
-
-    st.text_input(
-        "Total Funding requested (From Budget)",
-        value=f"USD {budget_total:,.2f}",
-        key="_ro_total_funding",
-        disabled=True,
-    )
-    st.text_input(
-        "# Outputs (read-only; count from Logframe)",
-        value=str(outputs_count),
-        key="_ro_outputs_count",
-        disabled=True,
-    )
-    st.text_input(
-        "# KPIs (read-only; count from Logframe)",
-        value=str(kpis_count),
-        key="_ro_kpis_count",
-        disabled=True,
-    )
-    st.text_input(
-        "# Activities (read-only; count from Workplan)",
-        value=str(activities_count),
-        key="_ro_activities_count",
-        disabled=True,
-    )
 
     # ---------- Summary cards (dashboard-style) ----------
 
