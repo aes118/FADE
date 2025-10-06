@@ -1422,7 +1422,6 @@ div[data-testid="column"] label p { font-weight: 600; }
 CATEGORY_TREE = {
     "Personnel": [
         "Salaries & Wages",
-        "Benefits",
         "Temporary / Short-Term Staff"
     ],
 
