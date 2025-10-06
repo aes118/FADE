@@ -1499,12 +1499,17 @@ CATEGORY_TREE = {
     ],
 
     "Indirect Costs / Overheads": [
-        "Institutional Overhead (flat % as per donor policy)"
+        "Institutional Overhead (as per donor policy)"
     ]
 }
 
 # Sub Category–driven Unit suggestions (bind only to Sub Category)
 SUBCATEGORY_UNIT_SUGGESTIONS = {
+    # Personnel
+    "Salaries & Wages": ["per hour", "per day", "per month"],
+    "Benefits": ["per staff member", "per month", "per year"],
+    "Temporary / Short-Term Staff": ["per day", "per staff member", "per contract"],
+    
     # Workshops, Training & Meetings
     "Venue Hire":                              ["per day", "per room-day", "per event day"],
     "Facilitation & Trainer Fees":             ["per day", "per consultant day", "per workshop day"],
@@ -1532,6 +1537,7 @@ SUBCATEGORY_UNIT_SUGGESTIONS = {
     "Stationery & Office Supplies":            ["per item", "per set", "per batch"],
     "Safety / Field Gear":                     ["per set", "per item"],
     "Lab / Medical Consumables":               ["per item", "per batch"],
+    "Other Consumables": ["per item", "per batch"],
 
     # Field Operations
     "Community Materials (Printing & Dissemination)": ["per copy", "per 100 copies", "per 1,000 copies", "per batch"],
@@ -1566,6 +1572,9 @@ SUBCATEGORY_UNIT_SUGGESTIONS = {
     "Subgrants":                               ["per subgrant"],
     "Partner Agreements":                      ["per partner agreement"],
     "Grants Management Fees":                  ["lump sum"],
+
+    # Indirect Costs / Overheads
+    "Institutional Overhead (as per donor policy)": ["lump sum"],
 }
 
 DEFAULT_UNIT_CHOICES = ["per item", "per unit"]
