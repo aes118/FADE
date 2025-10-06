@@ -22,6 +22,25 @@ from docx.oxml.ns import qn
 st.set_page_config(page_title="Falcon Awards Project Portal", layout="wide")
 st.sidebar.image("glide_logo.png", width="stretch")
 
+# ---------------- Canonical field labels ----------------
+LABELS = {
+    "title": "Project title",
+    "pi_name": "Principal Investigator (PI) name",
+    "pi_email": "PI email",
+    "implementing_partners": "Implementing Partner(s)",
+    "supporting_partners": "Supporting Partners (Optional)",
+    "start_date": "Project start date",
+    "end_date": "Project end date",
+    "location": "Implementation location",
+    "contact_name": "Main Contact person (Optional)",
+    "contact_email": "Main Contact email (Optional)",
+    "contact_phone": "Contact phone (Optional)",
+    "total_funding": "Total funding requested (From Budget)",
+    "outputs_count": "# Outputs (From Logframe)",
+    "kpis_count": "# KPIs (From Logframe)",
+    "activities_count": "# Activities (From Workplan)",
+}
+
 # ---------------- Helpers & State ----------------
 def _s(v):
     try:
@@ -635,9 +654,24 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
 
     doc = Document(str(template_path))
 
+    from copy import deepcopy
+
     body = doc.element.body
+
+    # Keep the section properties (<w:sectPr>) before clearing
+    sectPr_el = None
     for child in list(body):
+        if child.tag.endswith('sectPr'):
+            sectPr_el = deepcopy(child)
         body.remove(child)
+
+    # Reattach the section (or create a new one) so doc.sections[0] is valid
+    if sectPr_el is not None:
+        body.append(sectPr_el)
+
+    # Safety net: if no sections, add one now
+    if len(doc.sections) == 0:
+        doc.add_section(WD_SECTION_START.NEW_PAGE)
 
     def _set_orientation(section, orientation):
         section.orientation = orientation
@@ -645,6 +679,10 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
             section.page_width, section.page_height = section.page_height, section.page_width
         if orientation == WD_ORIENT.PORTRAIT and section.page_width > section.page_height:
             section.page_width, section.page_height = section.page_height, section.page_width
+
+    # Now it's safe to access and set orientation
+    first_section = doc.sections[0]
+    _set_orientation(first_section, WD_ORIENT.PORTRAIT)
 
     def _shade(cell, hex_fill):
         tcPr = cell._tc.get_or_add_tcPr()
@@ -734,21 +772,21 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     activities_count = len(st.session_state.get("workplan", []))
 
     overview_rows = [
-        ("Project title", id_info.get("title", "")),
-        ("Principal Investigator (PI) name", id_info.get("pi_name", "")),
-        ("PI email", id_info.get("pi_email", "")),
-        ("Implementing Partner(s) (If applicable)", id_info.get("implementing_partners", "")),
-        ("Supporting Partners", id_info.get("supporting_partners", "")),
-        ("Project start date", fmt_dd_mmm_yyyy(id_info.get("start_date"))),
-        ("Project end date", fmt_dd_mmm_yyyy(id_info.get("end_date"))),
-        ("Implementation location", id_info.get("location", "")),
-        ("Main Contact person (Optional)", id_info.get("contact_name", "")),
-        ("Main Contact email (Optional)", id_info.get("contact_email", "")),
-        ("Contact phone (Optional)", id_info.get("contact_phone", "")),
-        ("Total Funding requested (From Budget)", f"USD {budget_total:,.2f}"),
-        ("# Outputs (read-only; count from Logframe)", str(outputs_count)),
-        ("# KPIs (read-only; count from Logframe)", str(kpis_count)),
-        ("# Activities (read-only; count from Workplan)", str(activities_count)),
+        (LABELS["title"], id_info.get("title", "")),
+        (LABELS["pi_name"], id_info.get("pi_name", "")),
+        (LABELS["pi_email"], id_info.get("pi_email", "")),
+        (LABELS["implementing_partners"], id_info.get("implementing_partners", "")),
+        (LABELS["supporting_partners"], id_info.get("supporting_partners", "")),
+        (LABELS["start_date"], fmt_dd_mmm_yyyy(id_info.get("start_date"))),
+        (LABELS["end_date"], fmt_dd_mmm_yyyy(id_info.get("end_date"))),
+        (LABELS["location"], id_info.get("location", "")),
+        (LABELS["contact_name"], id_info.get("contact_name", "")),
+        (LABELS["contact_email"], id_info.get("contact_email", "")),
+        (LABELS["contact_phone"], id_info.get("contact_phone", "")),
+        (LABELS["total_funding"], f"USD {budget_total:,.2f}"),
+        (LABELS["outputs_count"], str(outputs_count)),
+        (LABELS["kpis_count"], str(kpis_count)),
+        (LABELS["activities_count"], str(activities_count)),
     ]
 
     overview_table = doc.add_table(rows=len(overview_rows), cols=2)
@@ -761,10 +799,14 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         overview_table.columns[idx].width = width
 
     for row_idx, (label, value) in enumerate(overview_rows):
-        _set_cell_text(overview_table.cell(row_idx, 0), str(label), bold=True)
+        # Left column: shaded + white text (same PRIMARY_SHADE used elsewhere)
+        _set_cell_text(overview_table.cell(row_idx, 0), str(label), bold=True, white=True)
+        _shade(overview_table.cell(row_idx, 0), PRIMARY_SHADE)
+
+        # Right column: normal
         _set_cell_text(overview_table.cell(row_idx, 1), _s(value))
 
-    doc.add_paragraph("")
+    doc.add_page_break()
     _h1("Logframe")
 
     goal = st.session_state.impacts[0] if st.session_state.get("impacts") else {}
@@ -934,8 +976,10 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         doc.add_paragraph("No activities defined yet.")
     else:
         df_wp = df_wp.copy()
-        df_wp["Start"] = df_wp["Start"].dt.strftime("%d/%b/%Y")
-        df_wp["End"] = df_wp["End"].dt.strftime("%d/%b/%Y")
+        df_wp["Start"] = pd.to_datetime(df_wp["Start"], errors="coerce").dt.strftime("%d/%b/%Y")
+        df_wp["End"] = pd.to_datetime(df_wp["End"], errors="coerce").dt.strftime("%d/%b/%Y")
+        df_wp["Start"] = df_wp["Start"].fillna("")
+        df_wp["End"] = df_wp["End"].fillna("")
 
         col_widths_act = (Cm(5.5), Cm(6.4), Cm(4.6), Cm(3.0), Cm(3.0))
         t_act = doc.add_table(rows=1, cols=5)
@@ -1928,23 +1972,25 @@ if uploaded_file is not None:
                 except Exception:
                     kv = {}
 
-                def _g(field):  # helper to get a string from the kv map
-                    return (kv.get(field, "") or "").strip()
+
+                def _g(field_label: str) -> str:
+                    return (kv.get(field_label, "") or "").strip()
 
                 id_info = st.session_state.get("id_info", {}) or {}
                 id_info.update({
-                    "title": _g("Project title"),
-                    "pi_name": _g("Principal Investigator (PI) name"),
-                    "pi_email": _g("PI email"),
-                    "implementing_partners": _g("Implementing Partner(s) (If applicable)"),
-                    "supporting_partners": _g("Supporting Partners"),
-                    "start_date": parse_date_like(kv.get("Project start date", "")) or id_info.get("start_date"),
-                    "end_date": parse_date_like(kv.get("Project end date", "")) or id_info.get("end_date"),
-                    "location": _g("Implementation location"),
-                    "contact_name": _g("Main Contact person (Optional)"),
-                    "contact_email": _g("Main Contact email (Optional)"),
-                    "contact_phone": _g("Contact phone (Optional)"),
+                    "title": _g(LABELS["title"]),
+                    "pi_name": _g(LABELS["pi_name"]),
+                    "pi_email": _g(LABELS["pi_email"]),
+                    "implementing_partners": _g(LABELS["implementing_partners"]),
+                    "supporting_partners": _g(LABELS["supporting_partners"]),
+                    "start_date": parse_date_like(kv.get(LABELS["start_date"], "")) or None,
+                    "end_date": parse_date_like(kv.get(LABELS["end_date"], "")) or None,
+                    "location": _g(LABELS["location"]),
+                    "contact_name": _g(LABELS["contact_name"]),
+                    "contact_email": _g(LABELS["contact_email"]),
+                    "contact_phone": _g(LABELS["contact_phone"]),
                 })
+
                 st.session_state.id_info = id_info
 
                 # prime live widget values so inputs show imported data immediately
@@ -2005,27 +2051,47 @@ with tabs[1]:
     ]:
         if k not in st.session_state:
             st.session_state[k] = v
-    st.session_state.id_info["title"] = st.text_input("Project title", key="id_title")
-    st.session_state.id_info["pi_name"] = st.text_input("Principal Investigator (PI) name", key="id_pi_name")
-    st.session_state.id_info["pi_email"] = st.text_input("PI email", key="id_pi_email")
-    st.session_state.id_info["implementing_partners"] = st.text_input("Implementing Partner(s) (If applicable)", key="id_implementing_partners")
-    st.session_state.id_info["supporting_partners"] = st.text_input("Supporting Partners", key="id_supporting_partners")
+    st.session_state.id_info["title"] = st.text_input(LABELS["title"], key="id_title")
+    st.session_state.id_info["pi_name"] = st.text_input(LABELS["pi_name"], key="id_pi_name")
+    st.session_state.id_info["pi_email"] = st.text_input(LABELS["pi_email"], key="id_pi_email")
+    st.session_state.id_info["implementing_partners"] = st.text_input(LABELS["implementing_partners"],
+                                                                      key="id_implementing_partners")
+    st.session_state.id_info["supporting_partners"] = st.text_input(LABELS["supporting_partners"],
+                                                                    key="id_supporting_partners")
+    st.session_state.id_info["location"] = st.text_input(LABELS["location"], key="id_location")
+    st.session_state.id_info["contact_name"] = st.text_input(LABELS["contact_name"], key="id_contact_name")
+    st.session_state.id_info["contact_email"] = st.text_input(LABELS["contact_email"], key="id_contact_email")
+    st.session_state.id_info["contact_phone"] = st.text_input(LABELS["contact_phone"], key="id_contact_phone")
 
-    sd = st.date_input("Project start date", key="id_start_date")
-    if sd:
-        st.caption(f"Selected: {fmt_dd_mmm_yyyy(sd)}")
+    def _as_date(val):
+        return val if isinstance(val, date) else None
 
-    ed = st.date_input("Project end date", key="id_end_date")
-    if ed:
-        st.caption(f"Selected: {fmt_dd_mmm_yyyy(ed)}")
+    if "id_start_date" in st.session_state and _as_date(st.session_state["id_start_date"]) is None:
+        del st.session_state["id_start_date"]
+    if "id_end_date" in st.session_state and _as_date(st.session_state["id_end_date"]) is None:
+        del st.session_state["id_end_date"]
 
-    st.session_state.id_info["start_date"] = sd
-    st.session_state.id_info["end_date"] = ed
+    start_default = _as_date(st.session_state.id_info.get("start_date")) or date.today()
+    end_default = _as_date(st.session_state.id_info.get("end_date")) or date.today()
 
-    st.session_state.id_info["location"] = st.text_input("Implementation location", key="id_location")
-    st.session_state.id_info["contact_name"] = st.text_input("Main Contact person (Optional)", key="id_contact_name")
-    st.session_state.id_info["contact_email"] = st.text_input("Main Contact email (Optional)", key="id_contact_email")
-    st.session_state.id_info["contact_phone"] = st.text_input("Contact phone (Optional)", key="id_contact_phone")
+    date_cols = st.columns(2)
+    with date_cols[0]:
+        sd = st.date_input(
+            "Project start date",
+            value=None if "id_start_date" in st.session_state else start_default,
+            key="id_start_date",
+            format="DD/MM/YYYY",
+        )
+    with date_cols[1]:
+        ed = st.date_input(
+            "Project end date",
+            value=None if "id_end_date" in st.session_state else end_default,
+            key="id_end_date",
+            format="DD/MM/YYYY",
+        )
+
+    st.session_state.id_info["start_date"] = sd if isinstance(sd, date) else None
+    st.session_state.id_info["end_date"] = ed if isinstance(ed, date) else None
 
     # inline validation (no button)
     errs = []
@@ -2034,8 +2100,6 @@ with tabs[1]:
         errs.append("Project title is required.")
     if not ii["pi_name"].strip():
         errs.append("PI name is required.")
-    if not ii["supporting_partners"].strip():
-        errs.append("Supporting Partners is required.")
     if not ii["location"].strip():
         errs.append("Implementation location is required.")
     if not ii["pi_email"].strip() or "@" not in ii["pi_email"] or "." not in ii["pi_email"]:
@@ -2064,31 +2128,6 @@ with tabs[1]:
     outputs_count = len(st.session_state.get("outputs", []))
     kpis_count = len(st.session_state.get("kpis", []))
     activities_count = len(st.session_state.get("workplan", []))
-
-    st.text_input(
-        "Total Funding requested (From Budget)",
-        value=f"USD {budget_total:,.2f}",
-        key="_ro_total_funding",
-        disabled=True,
-    )
-    st.text_input(
-        "# Outputs (read-only; count from Logframe)",
-        value=str(outputs_count),
-        key="_ro_outputs_count",
-        disabled=True,
-    )
-    st.text_input(
-        "# KPIs (read-only; count from Logframe)",
-        value=str(kpis_count),
-        key="_ro_kpis_count",
-        disabled=True,
-    )
-    st.text_input(
-        "# Activities (read-only; count from Workplan)",
-        value=str(activities_count),
-        key="_ro_activities_count",
-        disabled=True,
-    )
 
     # ---------- Summary cards (dashboard-style) ----------
 
@@ -2934,10 +2973,17 @@ with tabs[4]:
 
             # Category | Sub-Category
             ec, es = st.columns(2)
+            cat_options = list(CATEGORY_TREE.keys())
+            current_cat = st.session_state.get(f"e_cat_{rid}")
+            if current_cat not in CATEGORY_TREE:
+                current_cat = cat_options[0]
+                st.session_state[f"e_cat_{rid}"] = current_cat
             st.session_state[f"e_cat_{rid}"] = ec.selectbox(
-                "Cost Category*", list(CATEGORY_TREE.keys()),
-                index=list(CATEGORY_TREE.keys()).index(st.session_state[f"e_cat_{rid}"]),
-                on_change=_on_edit_cat_change, key=f"e_cat_key_{rid}"
+                "Cost Category*",
+                cat_options,
+                index=cat_options.index(current_cat) if cat_options else 0,
+                on_change=_on_edit_cat_change,
+                key=f"e_cat_key_{rid}"
             )
             sub_opts_e = subcategories_for(st.session_state[f"e_cat_{rid}"]) or ["(none)"]
             st.session_state[f"e_sub_{rid}"] = es.selectbox(
@@ -3128,23 +3174,23 @@ if tabs[6].button("Generate Backup File (Excel)"):
 
     ws_id = wb.create_sheet("Project Overview", 0)  # put it first
     ws_id.append(["Field", "Value"])
-    ws_id.append(["Project title", proj_title])
-    ws_id.append(["Principal Investigator (PI) name", pi_name])
-    ws_id.append(["PI email", pi_email])
-    ws_id.append(["Implementing Partner(s) (If applicable)", implementing_partners])
-    ws_id.append(["Supporting Partners", supporting_partners])
-    ws_id.append(["Project start date", fmt_dd_mmm_yyyy(start_date)])
-    ws_id.append(["Project end date", fmt_dd_mmm_yyyy(end_date)])
-    ws_id.append(["Implementation location", location])
-    ws_id.append(["Main Contact person (Optional)", contact_name])
-    ws_id.append(["Main Contact email (Optional)", contact_mail])
-    ws_id.append(["Contact phone (Optional)", contact_phone])
+    ws_id.append([LABELS["title"], proj_title])
+    ws_id.append([LABELS["pi_name"], pi_name])
+    ws_id.append([LABELS["pi_email"], pi_email])
+    ws_id.append([LABELS["implementing_partners"], implementing_partners])
+    ws_id.append([LABELS["supporting_partners"], supporting_partners])
+    ws_id.append([LABELS["start_date"], fmt_dd_mmm_yyyy(start_date)])
+    ws_id.append([LABELS["end_date"], fmt_dd_mmm_yyyy(end_date)])
+    ws_id.append([LABELS["location"], location])
+    ws_id.append([LABELS["contact_name"], contact_name])
+    ws_id.append([LABELS["contact_email"], contact_mail])
+    ws_id.append([LABELS["contact_phone"], contact_phone])
 
     # read-only summary values
-    ws_id.append(["Total Funding requested (From Budget)", f"USD {budget_total:,.2f}"])
-    ws_id.append(["# Outputs", outputs_count])
-    ws_id.append(["# KPIs", kpis_count])
-    ws_id.append(["# Activities", activities_count])
+    ws_id.append([LABELS["total_funding"], f"USD {budget_total:,.2f}"])
+    ws_id.append([LABELS["outputs_count"], outputs_count])
+    ws_id.append([LABELS["kpis_count"], kpis_count])
+    ws_id.append([LABELS["activities_count"], activities_count])
 
     # Sheet 1: Summary (Goal/Outcome/Output) — with explicit IDs
     s1 = wb.create_sheet("Summary", 1)
