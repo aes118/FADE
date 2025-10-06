@@ -22,6 +22,25 @@ from docx.oxml.ns import qn
 st.set_page_config(page_title="Falcon Awards Project Portal", layout="wide")
 st.sidebar.image("glide_logo.png", width="stretch")
 
+# ---------------- Canonical field labels ----------------
+LABELS = {
+    "title": "Project title",
+    "pi_name": "Principal Investigator (PI) name",
+    "pi_email": "PI email",
+    "implementing_partners": "Implementing Partner(s)",
+    "supporting_partners": "Supporting Partners (Optional)",
+    "start_date": "Project start date",
+    "end_date": "Project end date",
+    "location": "Implementation location",
+    "contact_name": "Main Contact person (Optional)",
+    "contact_email": "Main Contact email (Optional)",
+    "contact_phone": "Contact phone (Optional)",
+    "total_funding": "Total funding requested (From Budget)",
+    "outputs_count": "# Outputs (From Logframe)",
+    "kpis_count": "# KPIs (From Logframe)",
+    "activities_count": "# Activities (From Workplan)",
+}
+
 # ---------------- Helpers & State ----------------
 def _s(v):
     try:
@@ -753,21 +772,21 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     activities_count = len(st.session_state.get("workplan", []))
 
     overview_rows = [
-        ("Project title", id_info.get("title", "")),
-        ("Principal Investigator (PI) name", id_info.get("pi_name", "")),
-        ("PI email", id_info.get("pi_email", "")),
-        ("Implementing Partner(s)", id_info.get("implementing_partners", "")),
-        ("Supporting Partners (Optional)", id_info.get("supporting_partners", "")),
-        ("Project start date", fmt_dd_mmm_yyyy(id_info.get("start_date"))),
-        ("Project end date", fmt_dd_mmm_yyyy(id_info.get("end_date"))),
-        ("Implementation location", id_info.get("location", "")),
-        ("Main Contact person (Optional)", id_info.get("contact_name", "")),
-        ("Main Contact email (Optional)", id_info.get("contact_email", "")),
-        ("Contact phone (Optional)", id_info.get("contact_phone", "")),
-        ("Total funding requested (From Budget)", f"USD {budget_total:,.2f}"),
-        ("# Outputs (From Logframe)", str(outputs_count)),
-        ("# KPIs (From Logframe)", str(kpis_count)),
-        ("# Activities (From Workplan)", str(activities_count)),
+        (LABELS["title"], id_info.get("title", "")),
+        (LABELS["pi_name"], id_info.get("pi_name", "")),
+        (LABELS["pi_email"], id_info.get("pi_email", "")),
+        (LABELS["implementing_partners"], id_info.get("implementing_partners", "")),
+        (LABELS["supporting_partners"], id_info.get("supporting_partners", "")),
+        (LABELS["start_date"], fmt_dd_mmm_yyyy(id_info.get("start_date"))),
+        (LABELS["end_date"], fmt_dd_mmm_yyyy(id_info.get("end_date"))),
+        (LABELS["location"], id_info.get("location", "")),
+        (LABELS["contact_name"], id_info.get("contact_name", "")),
+        (LABELS["contact_email"], id_info.get("contact_email", "")),
+        (LABELS["contact_phone"], id_info.get("contact_phone", "")),
+        (LABELS["total_funding"], f"USD {budget_total:,.2f}"),
+        (LABELS["outputs_count"], str(outputs_count)),
+        (LABELS["kpis_count"], str(kpis_count)),
+        (LABELS["activities_count"], str(activities_count)),
     ]
 
     overview_table = doc.add_table(rows=len(overview_rows), cols=2)
@@ -1953,23 +1972,25 @@ if uploaded_file is not None:
                 except Exception:
                     kv = {}
 
-                def _g(field):  # helper to get a string from the kv map
-                    return (kv.get(field, "") or "").strip()
+
+                def _g(field_label: str) -> str:
+                    return (kv.get(field_label, "") or "").strip()
 
                 id_info = st.session_state.get("id_info", {}) or {}
                 id_info.update({
-                    "title": _g("Project title"),
-                    "pi_name": _g("Principal Investigator (PI) name"),
-                    "pi_email": _g("PI email"),
-                    "implementing_partners": _g("Implementing Partner(s)") or _g("Implementing Partner(s) (If applicable)"),
-                    "supporting_partners": _g("Supporting Partners (Optional)") or _g("Supporting Partners"),
-                    "start_date": parse_date_like(kv.get("Project start date", "")) or id_info.get("start_date"),
-                    "end_date": parse_date_like(kv.get("Project end date", "")) or id_info.get("end_date"),
-                    "location": _g("Implementation location"),
-                    "contact_name": _g("Main Contact person (Optional)"),
-                    "contact_email": _g("Main Contact email (Optional)"),
-                    "contact_phone": _g("Contact phone (Optional)"),
+                    "title": _g(LABELS["title"]),
+                    "pi_name": _g(LABELS["pi_name"]),
+                    "pi_email": _g(LABELS["pi_email"]),
+                    "implementing_partners": _g(LABELS["implementing_partners"]),
+                    "supporting_partners": _g(LABELS["supporting_partners"]),
+                    "start_date": parse_date_like(kv.get(LABELS["start_date"], "")) or None,
+                    "end_date": parse_date_like(kv.get(LABELS["end_date"], "")) or None,
+                    "location": _g(LABELS["location"]),
+                    "contact_name": _g(LABELS["contact_name"]),
+                    "contact_email": _g(LABELS["contact_email"]),
+                    "contact_phone": _g(LABELS["contact_phone"]),
                 })
+
                 st.session_state.id_info = id_info
 
                 # prime live widget values so inputs show imported data immediately
@@ -2030,11 +2051,17 @@ with tabs[1]:
     ]:
         if k not in st.session_state:
             st.session_state[k] = v
-    st.session_state.id_info["title"] = st.text_input("Project title", key="id_title")
-    st.session_state.id_info["pi_name"] = st.text_input("Principal Investigator (PI) name", key="id_pi_name")
-    st.session_state.id_info["pi_email"] = st.text_input("PI email", key="id_pi_email")
-    st.session_state.id_info["implementing_partners"] = st.text_input("Implementing Partner(s)", key="id_implementing_partners")
-    st.session_state.id_info["supporting_partners"] = st.text_input("Supporting Partners (Optional)", key="id_supporting_partners")
+    st.session_state.id_info["title"] = st.text_input(LABELS["title"], key="id_title")
+    st.session_state.id_info["pi_name"] = st.text_input(LABELS["pi_name"], key="id_pi_name")
+    st.session_state.id_info["pi_email"] = st.text_input(LABELS["pi_email"], key="id_pi_email")
+    st.session_state.id_info["implementing_partners"] = st.text_input(LABELS["implementing_partners"],
+                                                                      key="id_implementing_partners")
+    st.session_state.id_info["supporting_partners"] = st.text_input(LABELS["supporting_partners"],
+                                                                    key="id_supporting_partners")
+    st.session_state.id_info["location"] = st.text_input(LABELS["location"], key="id_location")
+    st.session_state.id_info["contact_name"] = st.text_input(LABELS["contact_name"], key="id_contact_name")
+    st.session_state.id_info["contact_email"] = st.text_input(LABELS["contact_email"], key="id_contact_email")
+    st.session_state.id_info["contact_phone"] = st.text_input(LABELS["contact_phone"], key="id_contact_phone")
 
     def _as_date(val):
         return val if isinstance(val, date) else None
@@ -2065,11 +2092,6 @@ with tabs[1]:
 
     st.session_state.id_info["start_date"] = sd if isinstance(sd, date) else None
     st.session_state.id_info["end_date"] = ed if isinstance(ed, date) else None
-
-    st.session_state.id_info["location"] = st.text_input("Implementation location", key="id_location")
-    st.session_state.id_info["contact_name"] = st.text_input("Main Contact person (Optional)", key="id_contact_name")
-    st.session_state.id_info["contact_email"] = st.text_input("Main Contact email (Optional)", key="id_contact_email")
-    st.session_state.id_info["contact_phone"] = st.text_input("Contact phone (Optional)", key="id_contact_phone")
 
     # inline validation (no button)
     errs = []
@@ -3137,23 +3159,23 @@ if tabs[6].button("Generate Backup File (Excel)"):
 
     ws_id = wb.create_sheet("Project Overview", 0)  # put it first
     ws_id.append(["Field", "Value"])
-    ws_id.append(["Project title", proj_title])
-    ws_id.append(["Principal Investigator (PI) name", pi_name])
-    ws_id.append(["PI email", pi_email])
-    ws_id.append(["Implementing Partner(s)", implementing_partners])
-    ws_id.append(["Supporting Partners (Optional)", supporting_partners])
-    ws_id.append(["Project start date", fmt_dd_mmm_yyyy(start_date)])
-    ws_id.append(["Project end date", fmt_dd_mmm_yyyy(end_date)])
-    ws_id.append(["Implementation location", location])
-    ws_id.append(["Main Contact person (Optional)", contact_name])
-    ws_id.append(["Main Contact email (Optional)", contact_mail])
-    ws_id.append(["Contact phone (Optional)", contact_phone])
+    ws_id.append([LABELS["title"], proj_title])
+    ws_id.append([LABELS["pi_name"], pi_name])
+    ws_id.append([LABELS["pi_email"], pi_email])
+    ws_id.append([LABELS["implementing_partners"], implementing_partners])
+    ws_id.append([LABELS["supporting_partners"], supporting_partners])
+    ws_id.append([LABELS["start_date"], fmt_dd_mmm_yyyy(start_date)])
+    ws_id.append([LABELS["end_date"], fmt_dd_mmm_yyyy(end_date)])
+    ws_id.append([LABELS["location"], location])
+    ws_id.append([LABELS["contact_name"], contact_name])
+    ws_id.append([LABELS["contact_email"], contact_mail])
+    ws_id.append([LABELS["contact_phone"], contact_phone])
 
     # read-only summary values
-    ws_id.append(["Total Funding requested (From Budget)", f"USD {budget_total:,.2f}"])
-    ws_id.append(["# Outputs", outputs_count])
-    ws_id.append(["# KPIs", kpis_count])
-    ws_id.append(["# Activities", activities_count])
+    ws_id.append([LABELS["total_funding"], f"USD {budget_total:,.2f}"])
+    ws_id.append([LABELS["outputs_count"], outputs_count])
+    ws_id.append([LABELS["kpis_count"], kpis_count])
+    ws_id.append([LABELS["activities_count"], activities_count])
 
     # Sheet 1: Summary (Goal/Outcome/Output) — with explicit IDs
     s1 = wb.create_sheet("Summary", 1)
