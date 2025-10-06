@@ -635,9 +635,28 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
 
     doc = Document(str(template_path))
 
+    from copy import deepcopy
+
     body = doc.element.body
+
+    # Keep the section properties (<w:sectPr>) before clearing
+    sectPr_el = None
     for child in list(body):
+        if child.tag.endswith('sectPr'):
+            sectPr_el = deepcopy(child)
         body.remove(child)
+
+    # Reattach the section (or create a new one) so doc.sections[0] is valid
+    if sectPr_el is not None:
+        body.append(sectPr_el)
+
+    # Safety net: if no sections, add one now
+    if len(doc.sections) == 0:
+        doc.add_section(WD_SECTION_START.NEW_PAGE)
+
+    # Now it's safe to access and set orientation
+    first_section = doc.sections[0]
+    _set_orientation(first_section, WD_ORIENT.PORTRAIT)
 
     def _set_orientation(section, orientation):
         section.orientation = orientation
@@ -2026,16 +2045,16 @@ with tabs[1]:
     with date_cols[0]:
         sd = st.date_input(
             "Project start date",
-            value=start_default,
-            format="DD/MM/YYYY",
+            value=None if "id_start_date" in st.session_state else start_default,
             key="id_start_date",
+            format="DD/MM/YYYY",
         )
     with date_cols[1]:
         ed = st.date_input(
             "Project end date",
-            value=end_default if end_default else sd,
-            format="DD/MM/YYYY",
+            value=None if "id_end_date" in st.session_state else end_default,
             key="id_end_date",
+            format="DD/MM/YYYY",
         )
 
     st.session_state.id_info["start_date"] = sd if isinstance(sd, date) else None
