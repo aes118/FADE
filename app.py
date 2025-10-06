@@ -737,7 +737,7 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         ("Project title", id_info.get("title", "")),
         ("Principal Investigator (PI) name", id_info.get("pi_name", "")),
         ("PI email", id_info.get("pi_email", "")),
-        ("Implementing Partner(s) (If applicable)", id_info.get("implementing_partners", "")),
+        ("Implementing Partner(s)", id_info.get("implementing_partners", "")),
         ("Supporting Partners", id_info.get("supporting_partners", "")),
         ("Project start date", fmt_dd_mmm_yyyy(id_info.get("start_date"))),
         ("Project end date", fmt_dd_mmm_yyyy(id_info.get("end_date"))),
@@ -1936,7 +1936,7 @@ if uploaded_file is not None:
                     "title": _g("Project title"),
                     "pi_name": _g("Principal Investigator (PI) name"),
                     "pi_email": _g("PI email"),
-                    "implementing_partners": _g("Implementing Partner(s) (If applicable)"),
+                    "implementing_partners": _g("Implementing Partner(s)") or _g("Implementing Partner(s) (If applicable)"),
                     "supporting_partners": _g("Supporting Partners"),
                     "start_date": parse_date_like(kv.get("Project start date", "")) or id_info.get("start_date"),
                     "end_date": parse_date_like(kv.get("Project end date", "")) or id_info.get("end_date"),
@@ -2008,16 +2008,24 @@ with tabs[1]:
     st.session_state.id_info["title"] = st.text_input("Project title", key="id_title")
     st.session_state.id_info["pi_name"] = st.text_input("Principal Investigator (PI) name", key="id_pi_name")
     st.session_state.id_info["pi_email"] = st.text_input("PI email", key="id_pi_email")
-    st.session_state.id_info["implementing_partners"] = st.text_input("Implementing Partner(s) (If applicable)", key="id_implementing_partners")
+    st.session_state.id_info["implementing_partners"] = st.text_input("Implementing Partner(s)", key="id_implementing_partners")
     st.session_state.id_info["supporting_partners"] = st.text_input("Supporting Partners", key="id_supporting_partners")
 
-    sd = st.date_input("Project start date", key="id_start_date")
-    if sd:
-        st.caption(f"Selected: {fmt_dd_mmm_yyyy(sd)}")
+    sd_init = st.session_state.id_info.get("start_date")
+    sd = st.date_input(
+        "Project start date",
+        value=sd_init if sd_init else None,
+        format="DD/MMM/YYYY",
+        key="id_start_date",
+    )
 
-    ed = st.date_input("Project end date", key="id_end_date")
-    if ed:
-        st.caption(f"Selected: {fmt_dd_mmm_yyyy(ed)}")
+    ed_init = st.session_state.id_info.get("end_date")
+    ed = st.date_input(
+        "Project end date",
+        value=ed_init if ed_init else None,
+        format="DD/MMM/YYYY",
+        key="id_end_date",
+    )
 
     st.session_state.id_info["start_date"] = sd
     st.session_state.id_info["end_date"] = ed
@@ -2034,8 +2042,6 @@ with tabs[1]:
         errs.append("Project title is required.")
     if not ii["pi_name"].strip():
         errs.append("PI name is required.")
-    if not ii["supporting_partners"].strip():
-        errs.append("Supporting Partners is required.")
     if not ii["location"].strip():
         errs.append("Implementation location is required.")
     if not ii["pi_email"].strip() or "@" not in ii["pi_email"] or "." not in ii["pi_email"]:
@@ -2884,8 +2890,11 @@ with tabs[4]:
             rid = rec["id"]
             st.session_state.setdefault(f"e_item_{rid}", rec.get("item",""))
             st.session_state.setdefault(f"e_act_lbl_{rid}", _activity_label(rec.get("activity_id")))
-            st.session_state.setdefault(f"e_cat_{rid}", rec.get("category") or list(CATEGORY_TREE.keys())[0])
-
+            default_cat = rec.get("category") if rec.get("category") in CATEGORY_TREE else None
+            if default_cat is None:
+                default_cat = next(iter(CATEGORY_TREE))
+            st.session_state.setdefault(f"e_cat_{rid}", default_cat)
+            # ensure current sub is in list
             cur_subs = subcategories_for(st.session_state[f"e_cat_{rid}"]) or ["(none)"]
             if rec.get("subcategory") not in cur_subs:
                 st.session_state.setdefault(f"e_sub_{rid}", cur_subs[0])
@@ -2916,10 +2925,17 @@ with tabs[4]:
 
             # Category | Sub-Category
             ec, es = st.columns(2)
+            cat_options = list(CATEGORY_TREE.keys())
+            current_cat = st.session_state.get(f"e_cat_{rid}")
+            if current_cat not in CATEGORY_TREE:
+                current_cat = cat_options[0]
+                st.session_state[f"e_cat_{rid}"] = current_cat
             st.session_state[f"e_cat_{rid}"] = ec.selectbox(
-                "Cost Category*", list(CATEGORY_TREE.keys()),
-                index=list(CATEGORY_TREE.keys()).index(st.session_state[f"e_cat_{rid}"]),
-                on_change=_on_edit_cat_change, key=f"e_cat_key_{rid}"
+                "Cost Category*",
+                cat_options,
+                index=cat_options.index(current_cat) if cat_options else 0,
+                on_change=_on_edit_cat_change,
+                key=f"e_cat_key_{rid}"
             )
             sub_opts_e = subcategories_for(st.session_state[f"e_cat_{rid}"]) or ["(none)"]
             st.session_state[f"e_sub_{rid}"] = es.selectbox(
@@ -3113,7 +3129,7 @@ if tabs[6].button("Generate Backup File (Excel)"):
     ws_id.append(["Project title", proj_title])
     ws_id.append(["Principal Investigator (PI) name", pi_name])
     ws_id.append(["PI email", pi_email])
-    ws_id.append(["Implementing Partner(s) (If applicable)", implementing_partners])
+    ws_id.append(["Implementing Partner(s)", implementing_partners])
     ws_id.append(["Supporting Partners", supporting_partners])
     ws_id.append(["Project start date", fmt_dd_mmm_yyyy(start_date)])
     ws_id.append(["Project end date", fmt_dd_mmm_yyyy(end_date)])
