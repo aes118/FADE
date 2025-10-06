@@ -444,7 +444,7 @@ def _force_calibri_everywhere(doc):
             style = doc.styles[style_name]
             font = style.font
             font.name = "Calibri"
-            font.size = Pt(11)
+            font.size = Pt(10)
             rpr = style.element.rPr
             if rpr is not None:
                 rFonts = rpr.rFonts
@@ -460,7 +460,7 @@ def _force_calibri_everywhere(doc):
     for p in doc.paragraphs:
         for run in p.runs:
             run.font.name = "Calibri"
-            run.font.size = Pt(11)
+            run.font.size = Pt(10)
             rpr = run._element.rPr
             if rpr is not None:
                 rFonts = rpr.rFonts
@@ -476,7 +476,7 @@ def _force_calibri_everywhere(doc):
                 for p in cell.paragraphs:
                     for run in p.runs:
                         run.font.name = "Calibri"
-                        run.font.size = Pt(11)
+                        run.font.size = Pt(10)
                         rpr = run._element.rPr
                         if rpr is not None:
                             rFonts = rpr.rFonts
@@ -523,7 +523,7 @@ def build_logframe_docx():
         run = p.add_run(text or "")
         run.bold = bool(bold)
         run.font.name = "Calibri"
-        run.font.size = Pt(11)
+        run.font.size = Pt(10)
         try:
             rpr = run._element.rPr
             rpr.rFonts.set(qn("w:ascii"), "Calibri")
@@ -538,7 +538,7 @@ def build_logframe_docx():
         run = p.add_run(text or "")
         run.bold = bold
         run.font.name = "Calibri"
-        run.font.size = Pt(11)
+        run.font.size = Pt(10)
         return run
 
     def _new_landscape_section(title):
