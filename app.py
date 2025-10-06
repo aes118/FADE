@@ -1441,13 +1441,14 @@ CATEGORY_TREE = {
         "Per Diem / Allowances"
     ],
 
-    "Workshops, Training & Meetings": [
+    "Events, Workshops, Training & Meetings": [
         "Venue Hire",
         "Facilitation & Trainer Fees",
         "Audio/Visual & Interpretation (on-site)",
         "Training / Workshop Materials",
         "Catering & Refreshments",
-        "Event Packages"
+        "Event Packages",
+        "Per diem"
     ],
 
     "Equipment & Technology": [
@@ -1492,7 +1493,7 @@ CATEGORY_TREE = {
     ],
 
     "Indirect Costs / Overheads": [
-        "Institutional Overhead (as per donor policy)"
+        "Institutional Overhead (as per GLIDE policy)"
     ]
 }
 
@@ -1502,47 +1503,48 @@ SUBCATEGORY_UNIT_SUGGESTIONS = {
     "Salaries & Wages": ["per hour", "per day", "per month", "per FTE-month"],
     "Temporary / Short-Term Staff": ["per day", "per hour", "per contract"],
     
-    # Workshops, Training & Meetings
-    "Venue Hire":                              ["per day", "per room-day", "per event day"],
-    "Facilitation & Trainer Fees":             ["per day", "per consultant day", "per workshop day"],
-    "Audio/Visual & Interpretation (on-site)": ["per day", "per workshop day"],
-    "Training / Workshop Materials":           ["per participant", "per participant day", "per set"],
-    "Catering & Refreshments":                 ["per participant", "per workshop day", "per event day"],
-    "Event Packages":                          ["per event package"],
+    # Events, Workshops, Training & Meetings
+    "Venue Hire":                              ["per day", "per event"],
+    "Facilitation & Trainer Fees":             ["per day", "per event"],
+    "Audio/Visual & Interpretation (on-site)": ["per day", "per event"],
+    "Training / Workshop Materials":           ["per participant", "per event"],
+    "Catering & Refreshments":                 ["per participant", "per event day", "per event"],
+    "Event Packages (e.g. entertainment, gifts, souvernirs, awards, etc.)": ["per event"], ["per person"],
+    "Per Diem / Allowances":                   ["per participant per day"],
 
     # Travel & Transportation
-    "International Travel":                    ["per round trip", "per visa"],
-    "Local Travel":                            ["per trip", "per km"],
+    "Airfare":                                 ["per individual"],
+    "Travel insurance":                        ["per individual"],
+    "Visa fees":                               ["per individual"],
     "Accommodation & Lodging":                 ["per night"],
-    "Per Diem / Allowances":                   ["per diem"],
+    "Ground Transportation":                   ["per person", "per trip", "per km"],
+    "Per Diem / Allowances":                   ["per participant per day"],
 
     # Equipment & Technology
-    "ICT Equipment (computers, phones, tablets)": ["per device", "per laptop", "per phone"],
-    "Software & Licenses":                     ["per software license", "per month", "per year"],
-    "Power & Connectivity (chargers, solar, batteries)": ["per item", "per set"],
+    "ICT Equipment (e.g., computers, phones, tablets)": ["per device"],
+    "Software & Licenses":                     ["per license", "per month", "per year"],
+    "Power & Connectivity (e.g., chargers, solar, batteries)": ["per item", "per set"],
     "Lab / Medical Equipment":                 ["per device"],
     "Hosting & Maintenance":                   ["per month", "per year"],
 
     # Supplies & Materials
     "Training Materials":                      ["per participant", "per set", "per item"],
-    "Printing & Dissemination":                ["per copy", "per 100 copies", "per 1,000 copies", "per batch"],
+    "Printing & Dissemination":                ["per copy", "per batch"],
     "Stationery & Office Supplies":            ["per item", "per set", "per batch"],
-    "Safety / Field Gear":                     ["per set", "per item"],
+    "Safety / Field Gear":                     ["per set", "per item", "per person"],
     "Lab / Medical Consumables":               ["per item", "per batch"],
-    "Other Consumables": ["per item", "per pack", "per batch"],
+    "Other Consumables":                       ["per item", "per pack", "per batch"],
 
     # Field Operations
-    "Community Materials (Printing & Dissemination)": ["per copy", "per 100 copies", "per 1,000 copies", "per batch"],
-    "Field Logistics & Distribution":          ["per distribution", "per vehicle-day"],
-    "Transport & Vehicle Operations":          ["per vehicle-day"],
+    "Transport & Vehicle Operations":          ["per vehicle-day", "per trip"],
     "Warehousing & Storage":                   ["per m²-month", "per pallet-month"],
     "Permits & Local Fees":                    ["per item", "lump sum"],
 
     # Communications & Advocacy
-    "Media Campaigns":                         ["per campaign", "per 30-second spot"],
+    "Printing & Dissemination":                ["per copy", "per 1,000 copies", "per batch"],
+    "Media Campaigns":                         ["per campaign", "per campaign day", "per 30-second spot"],
     "Design & Branding":                       ["per design"],
     "Publications & Layout":                   ["per report", "per page"],
-    "Events & Campaigns":                      ["per event day", "per campaign"],
     "Stakeholder Engagement / Public Relations": ["per event", "per campaign"],
 
     # Professional Services
@@ -1550,18 +1552,17 @@ SUBCATEGORY_UNIT_SUGGESTIONS = {
     "Research & Data Collection":              ["per day", "per survey", "per dataset"],
     "Monitoring, Evaluation & Learning":       ["per day", "per evaluation", "per study"],
     "IT & Systems Development":                ["per day", "per contract"],
-    "Legal, Audit & Compliance":               ["per day", "per contract", "per report"],
+    "Legal, Audit & Compliance":               ["per day", "per contract"],
     "Translation & Interpretation":            ["per day", "per translation page", "per 1,000 words"],
 
     # Administrative / Direct Operating Costs
     "Office Rent & Utilities":                 ["per month"],
     "Project Communications (internet/phone)": ["per month"],
-    "Insurance":                               ["per year", "per month"],
-    "Bank & Audit Fees":                       ["per contract", "per report"],
+    "Insurance":                               ["per month", "per year"],
     "General Admin & Shared Services":         ["per month"],
 
     # Indirect Costs / Overheads
-    "Institutional Overhead (as per donor policy)": ["lump sum"],
+    "Institutional Overhead (as per GLIDE policy)": ["lump sum"],
 }
 
 DEFAULT_UNIT_CHOICES = ["per item", "per unit"]
@@ -1596,76 +1597,6 @@ def unit_options_for_sub(subcategory: str, category: str | None = None, *, inclu
     if include_custom and CUSTOM_UNIT_OPTION not in ordered:
         ordered.append(CUSTOM_UNIT_OPTION)
     return ordered
-
-
-UNIT_DROPDOWN = [
-    # Time-based
-    "per hour",
-    "per day",
-    "per month",
-    "per year",
-    "per person-day",
-    "per person-month",
-
-    # People / participation
-    "per staff member",
-    "per participant",
-    "per trainee",
-    "per consultant day",
-
-    # Travel & lodging
-    "per trip",
-    "per round trip",
-    "per night",
-    "per visa",
-    "per km",
-    "per mile",
-    "per diem",  # daily allowance (amount per person per day)
-
-    # Events
-    "per meeting",
-    "per workshop",
-    "per workshop day",
-    "per training",
-    "per event day",
-    "per event package",
-    "per participant day",
-
-    # Deliverables / outputs
-    "per report",
-    "per study",
-    "per survey",
-    "per evaluation",
-    "per translation page",
-    "per dataset",
-
-    # Supplies & printing
-    "per item",
-    "per set",
-    "per batch",
-    "per copy",
-    "per 100 copies",
-    "per 1,000 copies",
-
-    # Equipment & technology
-    "per device",
-    "per laptop",
-    "per phone",
-    "per software license",
-    "per month (hosting)",
-
-    # Media / communications
-    "per 30-second spot",
-    "per campaign",
-
-    # Contracts / grants
-    "per contract",
-    "per subgrant",
-    "per partner agreement",
-
-    # Lump sum
-    "lump sum",
-]
 
 def subcategories_for(category: str):
     return CATEGORY_TREE.get(category, [])
