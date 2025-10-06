@@ -738,7 +738,7 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         ("Principal Investigator (PI) name", id_info.get("pi_name", "")),
         ("PI email", id_info.get("pi_email", "")),
         ("Implementing Partner(s)", id_info.get("implementing_partners", "")),
-        ("Supporting Partners", id_info.get("supporting_partners", "")),
+        ("Supporting Partners (Optional)", id_info.get("supporting_partners", "")),
         ("Project start date", fmt_dd_mmm_yyyy(id_info.get("start_date"))),
         ("Project end date", fmt_dd_mmm_yyyy(id_info.get("end_date"))),
         ("Implementation location", id_info.get("location", "")),
@@ -1937,7 +1937,7 @@ if uploaded_file is not None:
                     "pi_name": _g("Principal Investigator (PI) name"),
                     "pi_email": _g("PI email"),
                     "implementing_partners": _g("Implementing Partner(s)") or _g("Implementing Partner(s) (If applicable)"),
-                    "supporting_partners": _g("Supporting Partners"),
+                    "supporting_partners": _g("Supporting Partners (Optional)") or _g("Supporting Partners"),
                     "start_date": parse_date_like(kv.get("Project start date", "")) or id_info.get("start_date"),
                     "end_date": parse_date_like(kv.get("Project end date", "")) or id_info.get("end_date"),
                     "location": _g("Implementation location"),
@@ -2009,26 +2009,37 @@ with tabs[1]:
     st.session_state.id_info["pi_name"] = st.text_input("Principal Investigator (PI) name", key="id_pi_name")
     st.session_state.id_info["pi_email"] = st.text_input("PI email", key="id_pi_email")
     st.session_state.id_info["implementing_partners"] = st.text_input("Implementing Partner(s)", key="id_implementing_partners")
-    st.session_state.id_info["supporting_partners"] = st.text_input("Supporting Partners", key="id_supporting_partners")
+    st.session_state.id_info["supporting_partners"] = st.text_input("Supporting Partners (Optional)", key="id_supporting_partners")
 
-    sd_init = st.session_state.id_info.get("start_date")
-    sd = st.date_input(
-        "Project start date",
-        value=sd_init if sd_init else None,
-        format="DD/MMM/YYYY",
-        key="id_start_date",
-    )
+    def _as_date(val):
+        return val if isinstance(val, date) else None
 
-    ed_init = st.session_state.id_info.get("end_date")
-    ed = st.date_input(
-        "Project end date",
-        value=ed_init if ed_init else None,
-        format="DD/MMM/YYYY",
-        key="id_end_date",
-    )
+    if "id_start_date" in st.session_state and _as_date(st.session_state["id_start_date"]) is None:
+        del st.session_state["id_start_date"]
+    if "id_end_date" in st.session_state and _as_date(st.session_state["id_end_date"]) is None:
+        del st.session_state["id_end_date"]
 
-    st.session_state.id_info["start_date"] = sd
-    st.session_state.id_info["end_date"] = ed
+    start_default = _as_date(st.session_state.id_info.get("start_date")) or date.today()
+    end_default = _as_date(st.session_state.id_info.get("end_date")) or date.today()
+
+    date_cols = st.columns(2)
+    with date_cols[0]:
+        sd = st.date_input(
+            "Project start date",
+            value=start_default,
+            format="DD/MMM/YYYY",
+            key="id_start_date",
+        )
+    with date_cols[1]:
+        ed = st.date_input(
+            "Project end date",
+            value=end_default if end_default else sd,
+            format="DD/MMM/YYYY",
+            key="id_end_date",
+        )
+
+    st.session_state.id_info["start_date"] = sd if isinstance(sd, date) else None
+    st.session_state.id_info["end_date"] = ed if isinstance(ed, date) else None
 
     st.session_state.id_info["location"] = st.text_input("Implementation location", key="id_location")
     st.session_state.id_info["contact_name"] = st.text_input("Main Contact person (Optional)", key="id_contact_name")
@@ -3130,7 +3141,7 @@ if tabs[6].button("Generate Backup File (Excel)"):
     ws_id.append(["Principal Investigator (PI) name", pi_name])
     ws_id.append(["PI email", pi_email])
     ws_id.append(["Implementing Partner(s)", implementing_partners])
-    ws_id.append(["Supporting Partners", supporting_partners])
+    ws_id.append(["Supporting Partners (Optional)", supporting_partners])
     ws_id.append(["Project start date", fmt_dd_mmm_yyyy(start_date)])
     ws_id.append(["Project end date", fmt_dd_mmm_yyyy(end_date)])
     ws_id.append(["Implementation location", location])
