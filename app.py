@@ -888,7 +888,7 @@ def build_logframe_docx():
 
     # ==== WORKPLAN – Activities (table) ====
     from docx.shared import Cm
-    _new_section("WORKPLAN")
+    _new_landscape_section("WORKPLAN")
 
     # Build tidy DF exactly as in the app
     df_wp = _workplan_df()  # includes Activity/Output labels, Owner, Start, End
@@ -999,7 +999,7 @@ def build_logframe_docx():
         pass
 
     # ===== BUDGET =====
-    _ensure_portrait_section("BUDGET")
+    _new_landscape_section("BUDGET")
 
     # Detailed budget table: Activity | Line Item | Category | Sub-Category | Unit | Unit Cost (USD) | Quantity | Total (USD)
     bt = doc.add_table(rows=1, cols=8)
