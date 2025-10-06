@@ -627,6 +627,161 @@ def _force_calibri_everywhere(doc):
                                 rFonts.set(qn("w:hAnsi"), "Calibri")
                                 rFonts.set(qn("w:cs"), "Calibri")
 
+def _render_budget_row_editor(rec: dict, rid: str, act_lookup: dict) -> None:
+    """Standalone editor card for a single budget row (rid).
+    - Seeds once from rec; preserves user edits across reruns
+    - No value=/index=; session_state is the single source of truth
+    - Icons only (💾 / ✖️); total chip at the bottom-right
+    """
+    ss = st.session_state
+
+    # ---------- keys ----------
+    init_key      = f"e_init_{rid}"
+    item_key      = f"e_item_{rid}"
+    act_key       = f"e_act_id_{rid}"
+    cat_key       = f"e_cat_{rid}"
+    sub_key       = f"e_sub_{rid}"
+    unit_choice   = f"e_unit_choice_{rid}"
+    unit_custom   = f"e_unit_custom_{rid}"
+    uc_key        = f"e_uc_{rid}"
+    qty_key       = f"e_qty_{rid}"
+
+    # ---------- 1) Seed once when editor opens ----------
+    if not ss.get(init_key, False):
+        ss[item_key] = rec.get("item", "")
+        ss[act_key]  = rec.get("activity_id")
+
+        ss[cat_key]  = rec.get("category") or list(CATEGORY_TREE.keys())[0]
+        sub_opts     = subcategories_for(ss[cat_key]) or ["(none)"]
+        existing_sub = rec.get("subcategory")
+        ss[sub_key]  = existing_sub if existing_sub in sub_opts else (sub_opts[0] if sub_opts else "")
+
+        # Unit seeding: keep exact match; otherwise 'Custom…' only if needed and allowed
+        units, required = unit_choices_for(ss[cat_key], ss[sub_key])
+        u_opts = ["Select unit"] + list(dict.fromkeys(units))
+        if not required:
+            u_opts.append("Custom…")
+        existing_unit = (rec.get("unit") or "").strip()
+        if existing_unit in u_opts:
+            ss[unit_choice] = existing_unit
+            ss[unit_custom] = ""
+        else:
+            if existing_unit and not required:
+                ss[unit_choice] = "Custom…"
+                ss[unit_custom] = existing_unit
+            else:
+                ss[unit_choice] = "Select unit"
+                ss[unit_custom] = ""
+
+        ss[uc_key]  = float(rec.get("unit_cost") or 0.0)
+        ss[qty_key] = float(rec.get("qty") or 0.0)
+        ss[init_key] = True
+
+    # ---------- 2) Editor UI (no value=/index=) ----------
+    st.markdown("<div class='form-card'>", unsafe_allow_html=True)
+
+    # top-right icons only (save/cancel)
+    _, _, ico_save, ico_cancel = st.columns([0.76, 0.14, 0.05, 0.05])
+    save_clicked   = ico_save.button("💾", key=f"e_save_icon_{rid}", help="Save")
+    cancel_clicked = ico_cancel.button("✖️", key=f"e_cancel_icon_{rid}", help="Cancel")
+
+    # Line Item
+    st.text_area("Line Item*", key=item_key, height=48)
+
+    # Linked Activity (optional) — ID-based
+    act_options = [None] + list(act_lookup.keys())
+    def _fmt_act(aid): return "(none)" if aid is None else act_lookup.get(aid, "(unavailable)")
+    st.selectbox("Linked Activity (optional)", act_options, key=act_key, format_func=_fmt_act)
+
+    # Category / Sub-category (stabilized chain)
+    c_col, s_col = st.columns(2)
+    cur_cat = c_col.selectbox("Cost Category*", list(CATEGORY_TREE.keys()), key=cat_key)
+
+    sub_opts = subcategories_for(cur_cat) or ["(none)"]
+    if ss[sub_key] not in sub_opts:
+        ss[sub_key] = sub_opts[0]
+    cur_sub = s_col.selectbox("Sub Category*", sub_opts, key=sub_key)
+
+    # Unit + custom — recompute after cat/sub changes
+    units, required = unit_choices_for(cur_cat, cur_sub)
+    u_opts = ["Select unit"] + list(dict.fromkeys(units))
+    if not required:
+        u_opts.append("Custom…")
+
+    # If current choice became invalid due to cat/sub change, reset gracefully
+    if ss[unit_choice] not in u_opts and not (ss[unit_choice] == "Custom…" and not required):
+        # keep previously typed custom only if custom is still allowed
+        if not required and ss.get(unit_custom, ""):
+            ss[unit_choice] = "Custom…"
+        else:
+            ss[unit_choice] = "Select unit"
+            ss[unit_custom] = ""
+
+    st.selectbox("Unit" + ("*" if required else ""), u_opts, key=unit_choice)
+    if ss[unit_choice] == "Custom…" and not required:
+        st.text_input(" ", key=unit_custom)  # custom unit text
+    else:
+        ss[unit_custom] = ""
+
+    # Costs
+    c1, c2, c3 = st.columns([0.33, 0.33, 0.34])
+    st.number_input("Unit Cost (USD)*", min_value=0.0, step=10.0, format="%.2f", key=uc_key)
+    st.number_input("Quantity*",       min_value=0.0, step=1.0,  format="%.2f", key=qty_key)
+
+    # bottom-right total chip (end of card)
+    new_total = float(ss[uc_key]) * float(ss[qty_key])
+    st.markdown(
+        f"""
+        <div style="display:flex; justify-content:flex-end; margin-top:10px;">
+          <span class="total-chip">USD {new_total:,.2f}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("</div>", unsafe_allow_html=True)  # close form-card
+
+    # ---------- 3) Handlers ----------
+    if cancel_clicked:
+        ss.edit_budget_row = None
+        st.rerun()
+
+    if save_clicked:
+        # finalize unit
+        choice = ss[unit_choice]
+        if choice == "Select unit":
+            final_unit = ""
+        elif choice == "Custom…" and not required:
+            final_unit = (ss.get(unit_custom, "") or "").strip()
+        else:
+            final_unit = choice
+
+        # validations
+        if not ss[item_key].strip():
+            st.warning("Line Item is required."); return
+        if not cur_cat:
+            st.warning("Cost Category is required."); return
+        if not cur_sub or cur_sub == "(none)":
+            st.warning("Sub Category is required."); return
+        if required and not final_unit:
+            st.warning("Please choose a Unit for this Sub Category."); return
+        if float(ss[uc_key]) <= 0 or float(ss[qty_key]) <= 0:
+            st.warning("Unit cost and quantity must be positive."); return
+
+        # update row in place
+        rec.update({
+            "activity_id": ss[act_key],
+            "item": ss[item_key].strip(),
+            "category": cur_cat,
+            "subcategory": cur_sub,
+            "unit": final_unit,
+            "unit_cost": float(ss[uc_key]),
+            "qty": float(ss[qty_key]),
+            "total_usd": new_total,
+        })
+
+        ss.edit_budget_row = None
+        st.rerun()
 
 def render_pdd(context=None, gantt_image_path: str | None = None):
     """Build the Project Design Document using the branding template with dynamic sections."""
@@ -2679,8 +2834,6 @@ with tabs[4]:
     # ---------- session state ----------
     if "edit_budget_row" not in st.session_state:
         st.session_state.edit_budget_row = None
-    if "show_edit" not in st.session_state:
-        st.session_state.show_edit = False
 
     # ---------- lookups ----------
     activities = st.session_state.get("workplan", [])
@@ -2750,28 +2903,44 @@ with tabs[4]:
         subtotal = 0.0
         for r in lines_by_act.get(a["id"], []):
             rid = r["id"]
-            l1, l2, l3, l4, l5, l6, l7, l8 = st.columns([0.28, 0.18, 0.18, 0.12, 0.10, 0.06, 0.06, 0.08])
-            l1.markdown(f"<div class='budget-cell'>{escape(r.get('item', '—'))}</div>", unsafe_allow_html=True)
-            l2.write(r.get("category", "—"))
-            l3.write(r.get("subcategory", "—"))
-            l4.write(r.get("unit", "—"))
 
+            # inline editor FIRST
+            if st.session_state.get("edit_budget_row") == rid:
+                _render_budget_row_editor(r, rid, act_lookup)
+                continue
+
+            # --- Static row (one line item) ---
+            l1, l2, l3, l4, l5, l6, l7, l8 = st.columns([0.28, 0.18, 0.18, 0.12, 0.10, 0.06, 0.06, 0.08])
+
+            # values
+            item = r.get("item", "—")
+            cat = r.get("category", "—")
+            subc = r.get("subcategory", "—")
+            unit = r.get("unit", "—")
             uc = float(r.get("unit_cost") or 0.0)
             qty = float(r.get("qty") or 0.0)
             tot = float(r.get("total_usd") or (uc * qty) or 0.0)
 
+            # cells
+            l1.markdown(f"<div class='budget-cell'>{escape(item)}</div>", unsafe_allow_html=True)
+            l2.write(cat)
+            l3.write(subc)
+            l4.write(unit)
             l5.write(f"{uc:,.2f}")
             l6.write(f"{qty:,.2f}")
             l7.write(f"{tot:,.2f}")
 
+            # actions
             b_edit, b_del = l8.columns(2)
             if b_edit.button("✏️", key=f"edit_{rid}", help="Edit line"):
                 st.session_state.edit_budget_row = rid
-                st.session_state.show_edit = True
+                st.session_state[f"e_init_{rid}"] = False  # seed-once flag for the editor
+                st.rerun()
             if b_del.button("🗑️", key=f"del_{rid}", help="Delete line"):
                 st.session_state.budget = [x for x in st.session_state.budget if x["id"] != rid]
                 st.rerun()
 
+            # accumulate subtotal
             subtotal += tot
 
         st.markdown(
@@ -2910,200 +3079,6 @@ with tabs[4]:
     # Grand total for the whole budget
     st.markdown(f"**Total: USD {grand_total:,.2f}**")
     st.caption(footer_note)
-
-    # =========================================================
-    # EDIT POP-UP (only when ✏️ clicked) — dynamic Sub updates
-    # =========================================================
-    if st.session_state.show_edit and st.session_state.edit_budget_row is not None:
-        rec = next((x for x in st.session_state.budget if x["id"] == st.session_state.edit_budget_row), None)
-        if rec:
-            st.markdown("---")
-            st.subheader("Edit budget line")
-
-            rid = rec["id"]
-            st.session_state.setdefault(f"e_item_{rid}", rec.get("item",""))
-            # migrate away from legacy label-based state keys if present
-            legacy_act_label_key = f"e_act_lbl_{rid}"
-            if legacy_act_label_key in st.session_state:
-                st.session_state.pop(legacy_act_label_key, None)
-            st.session_state.setdefault(f"e_act_id_{rid}", rec.get("activity_id"))
-            st.session_state.setdefault(f"e_cat_{rid}", rec.get("category") or list(CATEGORY_TREE.keys())[0])
-
-            cur_subs = subcategories_for(st.session_state[f"e_cat_{rid}"]) or ["(none)"]
-            if rec.get("subcategory") not in cur_subs:
-                st.session_state.setdefault(f"e_sub_{rid}", cur_subs[0])
-            else:
-                st.session_state.setdefault(f"e_sub_{rid}", rec.get("subcategory"))
-
-            st.session_state.setdefault(f"e_uc_{rid}", float(rec.get("unit_cost") or 0.0))
-            st.session_state.setdefault(f"e_qty_{rid}", float(rec.get("qty") or 0.0))
-
-            def _on_edit_cat_change():
-                opts = subcategories_for(st.session_state[f"e_cat_{rid}"]) or ["(none)"]
-                st.session_state[f"e_sub_{rid}"] = opts[0]
-
-            st.markdown("<div class='form-card'>", unsafe_allow_html=True)
-
-            st.session_state[f"e_item_{rid}"] = st.text_area(
-                "Line Item*", value=st.session_state[f"e_item_{rid}"], height=48, key=f"e_item_key_{rid}"
-            )
-
-            # Linked Activity
-            act_state_key = f"e_act_id_{rid}"
-            act_options = [None] + [aid for aid in act_lookup]
-
-            current_act_id = st.session_state.get(act_state_key)
-            if current_act_id not in act_options:
-                current_act_id = None
-                st.session_state[act_state_key] = None
-
-            def _format_act_option(aid):
-                if aid is None:
-                    return "(none)"
-                return act_lookup.get(aid, "(unavailable)")
-
-            selected_act_id = st.selectbox(
-                "Linked Activity (optional)",
-                act_options,
-                index=act_options.index(current_act_id),
-                format_func=_format_act_option,
-                key=act_state_key,
-            )
-            new_act_id = selected_act_id
-
-            # Category | Sub-Category
-            ec, es = st.columns(2)
-            cat_options = list(CATEGORY_TREE.keys())
-            current_cat = st.session_state.get(f"e_cat_{rid}")
-            if current_cat not in CATEGORY_TREE:
-                current_cat = cat_options[0]
-                st.session_state[f"e_cat_{rid}"] = current_cat
-            st.session_state[f"e_cat_{rid}"] = ec.selectbox(
-                "Cost Category*",
-                cat_options,
-                index=cat_options.index(current_cat) if cat_options else 0,
-                on_change=_on_edit_cat_change,
-                key=f"e_cat_key_{rid}"
-            )
-            sub_opts_e = subcategories_for(st.session_state[f"e_cat_{rid}"]) or ["(none)"]
-            st.session_state[f"e_sub_{rid}"] = es.selectbox(
-                "Sub Category*", sub_opts_e,
-                index=sub_opts_e.index(st.session_state[f"e_sub_{rid}"])
-                if st.session_state[f"e_sub_{rid}"] in sub_opts_e else 0,
-                key=f"e_sub_key_{rid}"
-            )
-
-            # Unit | Unit Cost | Quantity
-            eu, euc, eqty = st.columns([0.42, 0.29, 0.29])
-
-            unit_choice_key = f"e_unit_choice_{rid}"
-            unit_custom_key = f"e_unit_custom_{rid}"
-            unit_prev_sub_key = f"e_unit_prev_sub_{rid}"
-            unit_reset_key = f"e_unit_reset_{rid}"
-
-            unit_values_e, unit_required_e = unit_choices_for(
-                st.session_state[f"e_cat_{rid}"], st.session_state[f"e_sub_{rid}"]
-            )
-            allow_custom_e = not unit_required_e
-            unit_opts_e = ["Select unit"] + list(dict.fromkeys(unit_values_e))
-            if allow_custom_e:
-                unit_opts_e.append("Custom…")
-
-            # Seed the unit selector with the existing value, if it’s not part of options
-            existing_unit = (rec.get("unit") or "").strip()
-            if existing_unit and existing_unit not in unit_opts_e:
-                unit_opts_e.insert(1, existing_unit)
-
-            if unit_choice_key not in st.session_state:
-                default_choice = existing_unit or "Select unit"
-                if default_choice not in unit_opts_e:
-                    default_choice = "Select unit"
-                st.session_state[unit_choice_key] = default_choice
-            st.session_state.setdefault(unit_custom_key, "")
-            st.session_state.setdefault(unit_prev_sub_key, st.session_state[f"e_sub_{rid}"])
-            st.session_state.setdefault(unit_reset_key, False)
-
-            # reset if sub changed
-            if st.session_state[unit_prev_sub_key] != st.session_state[f"e_sub_{rid}"]:
-                sel = st.session_state[unit_choice_key]
-                if sel not in unit_opts_e or (sel == "Custom…" and not allow_custom_e):
-                    st.session_state[unit_choice_key] = "Select unit"
-                    st.session_state[unit_custom_key] = ""
-                    st.session_state[unit_reset_key]  = unit_required_e
-                else:
-                    st.session_state[unit_reset_key] = False
-                st.session_state[unit_prev_sub_key] = st.session_state[f"e_sub_{rid}"]
-
-            st.session_state[unit_choice_key] = eu.selectbox(
-                "Unit" + ("*" if unit_required_e else ""), unit_opts_e,
-                index=unit_opts_e.index(st.session_state[unit_choice_key]), key=f"e_unit_choice_box_{rid}"
-            )
-            if st.session_state[unit_choice_key] == "Custom…" and allow_custom_e:
-                st.session_state[unit_custom_key] = eu.text_input(" ", value=st.session_state[unit_custom_key],
-                                                                  key=f"e_unit_custom_key_{rid}")
-            else:
-                if st.session_state[unit_choice_key] != "Custom…":
-                    st.session_state[unit_custom_key] = ""
-                if st.session_state.get(unit_reset_key) and st.session_state[unit_choice_key] not in ("Select unit","Custom…"):
-                    st.session_state[unit_reset_key] = False
-
-            if unit_required_e and st.session_state.get(unit_reset_key):
-                eu.caption("Unit reset — please choose a unit for this sub-category.")
-
-            # Final unit value
-            if st.session_state[unit_choice_key] == "Select unit":
-                final_unit_e = ""
-            elif st.session_state[unit_choice_key] == "Custom…" and allow_custom_e:
-                final_unit_e = (st.session_state.get(unit_custom_key, "") or "").strip()
-            else:
-                final_unit_e = st.session_state[unit_choice_key]
-
-            st.session_state[f"e_uc_{rid}"]  = euc.number_input(
-                "Unit Cost (USD)*", min_value=0.0, value=float(st.session_state[f"e_uc_{rid}"]),
-                step=10.0, format="%.2f", key=f"e_uc_key_{rid}"
-            )
-            st.session_state[f"e_qty_{rid}"] = eqty.number_input(
-                "Quantity*", min_value=0.0, value=float(st.session_state[f"e_qty_{rid}"]),
-                step=1.0, format="%.2f", key=f"e_qty_key_{rid}"
-            )
-            new_total = float(st.session_state[f"e_uc_{rid}"]) * float(st.session_state[f"e_qty_{rid}"])
-
-            sL, sR = st.columns([0.30, 0.70])
-            if sL.button("Save", key=f"e_save_{rid}"):
-                if not st.session_state[f"e_item_{rid}"].strip():
-                    st.warning("Line Item is required.")
-                elif not st.session_state[f"e_cat_{rid}"]:
-                    st.warning("Cost Category is required.")
-                elif not st.session_state[f"e_sub_{rid}"] or st.session_state[f"e_sub_{rid}"] == "(none)":
-                    st.warning("Sub Category is required.")
-                elif unit_required_e and not str(final_unit_e).strip():
-                    st.warning("Please choose a Unit for this Sub Category.")
-                elif float(st.session_state[f"e_uc_{rid}"]) <= 0 or float(st.session_state[f"e_qty_{rid}"]) <= 0:
-                    st.warning("Unit cost and quantity must be positive.")
-                else:
-                    rec.update({
-                        "activity_id": new_act_id,
-                        "item": st.session_state[f"e_item_{rid}"].strip(),
-                        "category": st.session_state[f"e_cat_{rid}"],
-                        "subcategory": st.session_state[f"e_sub_{rid}"],
-                        "unit": final_unit_e,
-                        "unit_cost": float(st.session_state[f"e_uc_{rid}"]),
-                        "qty": float(st.session_state[f"e_qty_{rid}"]),
-                        "total_usd": new_total
-                    })
-                    st.session_state.show_edit = False
-                    st.session_state.edit_budget_row = None
-                    st.rerun()
-
-            sR.markdown(
-                f"<div style='text-align:right;'><span class='total-chip'>USD {new_total:,.2f}</span></div>",
-                unsafe_allow_html=True,
-            )
-
-            if st.button("Cancel", key=f"e_cancel_{rid}"):
-                st.session_state.show_edit = False
-                st.session_state.edit_budget_row = None
-                st.rerun()
 
 # ===== TAB 6: Disbursement Schedule =====
 with tabs[5]:
