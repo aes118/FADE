@@ -2968,7 +2968,7 @@ with tabs[5]:
 
 # ===== TAB 7: Export =====
 tabs[6].header("📤 Export Your Application")
-if tabs[6].button("Generate Excel Backup File"):
+if tabs[6].button("Generate Backup File (Excel)"):
     wb = Workbook()
     if "Sheet" in wb.sheetnames:
         wb.remove(wb["Sheet"])
@@ -3178,20 +3178,20 @@ if tabs[6].button("Generate Excel Backup File"):
     wb.save(buf)
     buf.seek(0)
     tabs[6].download_button(
-        "📥 Download Excel File",
+        "📥 Download Backup File (Excel)",
         data=buf,
         file_name="Application_Submission.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 # --- Word export (Logframe as table)
-if tabs[6].button("Generate Word Document"):
+if tabs[6].button("Generate Project Design Document (Word)"):
     try:
         word_buf = build_logframe_docx()
         proj_title = (st.session_state.get("id_info", {}) or {}).get("title", "") or "Project"
         safe = re.sub(r"[^A-Za-z0-9]+", "_", proj_title).strip("_") or "Project"
         tabs[6].download_button(
-            "📥 Download Word Document",
+            "📥 Download Project Design Document (Word)",
             data=word_buf,
             file_name=f"Logframe_{safe}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
