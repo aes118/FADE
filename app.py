@@ -1568,18 +1568,39 @@ SUBCATEGORY_UNIT_SUGGESTIONS = {
     "Grants Management Fees":                  ["lump sum"],
 }
 
-def unit_options_for_sub(subcategory: str) -> list[str]:
-    """
-    Return unit list driven by Sub Category, falling back to global UNIT_DROPDOWN; append 'Custom…'.
-    Dedupes while preserving order.
-    """
-    base = SUBCATEGORY_UNIT_SUGGESTIONS.get(subcategory, [])
+DEFAULT_UNIT_CHOICES = ["per item", "per unit"]
+UNIT_PLACEHOLDER = "Select unit"
+CUSTOM_UNIT_OPTION = "Custom…"
+
+SUBCATEGORY_UNITS = {
+    (category, sub): SUBCATEGORY_UNIT_SUGGESTIONS.get(sub, [])
+    for category, subs in CATEGORY_TREE.items()
+    for sub in subs
+}
+
+
+def unit_choices_for(category: str | None, subcategory: str) -> tuple[list[str], bool]:
+    """Return (unit options, has_defined_mapping) for the given category/subcategory."""
+    defined = SUBCATEGORY_UNITS.get((category, subcategory), []) if category is not None else []
+    has_defined = bool(defined)
+    base = defined if has_defined else SUBCATEGORY_UNIT_SUGGESTIONS.get(subcategory, [])
+    if not base:
+        base = DEFAULT_UNIT_CHOICES
     seen, ordered = set(), []
-    for u in base + UNIT_DROPDOWN:
+    for u in base:
         if u and u not in seen:
-            seen.add(u); ordered.append(u)
-    ordered.append("Custom…")
+            seen.add(u)
+            ordered.append(u)
+    return ordered, has_defined
+
+
+def unit_options_for_sub(subcategory: str, category: str | None = None, *, include_custom: bool = True) -> list[str]:
+    units, _ = unit_choices_for(category, subcategory)
+    ordered = list(units)
+    if include_custom and CUSTOM_UNIT_OPTION not in ordered:
+        ordered.append(CUSTOM_UNIT_OPTION)
     return ordered
+
 
 UNIT_DROPDOWN = [
     # Time-based
@@ -2769,31 +2790,122 @@ with tabs[4]:
 
         # Per-activity add form (link is implicit by activity id)
         with st.expander("➕ Add Budget Line to this Activity"):
-            c1, c2 = st.columns([0.60, 0.40])
-            item = c1.text_input("Line Item*", key=f"add_item_{a['id']}")
-            cat = c2.selectbox("Cost Category*", list(CATEGORY_TREE.keys()), key=f"add_cat_{a['id']}")
-            sub_opts = subcategories_for(cat) or ["(none)"]
-            sub = c2.selectbox("Sub Category*", sub_opts, key=f"add_sub_{a['id']}")
+            form_prefix = f"add_{a['id']}"
+            item_key = f"{form_prefix}_item"
+            cat_key = f"{form_prefix}_cat"
+            sub_key = f"{form_prefix}_sub"
+            unit_key = f"{form_prefix}_unit"
+            unit_prev_sub_key = f"{form_prefix}_unit_prev_sub"
+            unit_reset_key = f"{form_prefix}_unit_reset"
+            unit_custom_key = f"{form_prefix}_unit_custom"
 
-            # Unit (use your dynamic Sub→Unit here if desired)
-            cU, cUC, cQ = st.columns([0.38, 0.31, 0.31])
-            unit = cU.selectbox("Unit", UNIT_DROPDOWN + ["Custom…"], key=f"add_unit_{a['id']}")
-            if unit == "Custom…":
-                unit = cU.text_input(" ", key=f"add_unit_custom_{a['id']}")
+            cat_options = list(CATEGORY_TREE.keys())
+            st.session_state.setdefault(cat_key, cat_options[0])
 
-            uc = cUC.number_input("Unit Cost (USD)*", min_value=0.0, value=0.0, step=10.0, format="%.2f",
-                                  key=f"add_uc_{a['id']}")
-            qty = cQ.number_input("Qty*", min_value=0.0, value=1.0, step=1.0, format="%.2f", key=f"add_qty_{a['id']}")
+            current_cat = st.session_state[cat_key]
+            sub_options = subcategories_for(current_cat) or ["(none)"]
+            if sub_key not in st.session_state or st.session_state[sub_key] not in sub_options:
+                st.session_state[sub_key] = sub_options[0] if sub_options else ""
+
+            st.session_state.setdefault(unit_key, UNIT_PLACEHOLDER)
+            st.session_state.setdefault(unit_reset_key, False)
+            st.session_state.setdefault(unit_custom_key, "")
+
+            # Row 1 — Line item spans full width
+            item = st.text_input("Line Item*", key=item_key)
+
+            # Row 2 — Category | Sub Category | Unit
+            r2_c1, r2_c2, r2_c3 = st.columns(3)
+            current_cat = r2_c1.selectbox("Cost Category*", cat_options,
+                                          index=cat_options.index(st.session_state[cat_key]), key=cat_key)
+
+            sub_options = subcategories_for(current_cat) or ["(none)"]
+            if st.session_state[sub_key] not in sub_options:
+                st.session_state[sub_key] = sub_options[0] if sub_options else ""
+            sub_index = sub_options.index(st.session_state[sub_key]) if st.session_state[sub_key] in sub_options else 0
+            sub = r2_c2.selectbox("Sub Category*", sub_options, index=sub_index, key=sub_key)
+
+            unit_values, unit_required = unit_choices_for(current_cat, sub)
+            allow_custom = not unit_required
+            option_candidates = [UNIT_PLACEHOLDER] + unit_values
+            if allow_custom:
+                option_candidates.append(CUSTOM_UNIT_OPTION)
+            unit_options = []
+            seen_unit_opts = set()
+            for opt in option_candidates:
+                if opt and opt not in seen_unit_opts:
+                    seen_unit_opts.add(opt)
+                    unit_options.append(opt)
+
+            current_selection = st.session_state.get(unit_key, UNIT_PLACEHOLDER)
+            if current_selection not in unit_options:
+                st.session_state[unit_key] = UNIT_PLACEHOLDER
+                st.session_state[unit_custom_key] = ""
+                st.session_state[unit_reset_key] = unit_required
+
+            prev_sub = st.session_state.get(unit_prev_sub_key)
+            if prev_sub is not None and prev_sub != sub:
+                next_selection = st.session_state.get(unit_key, UNIT_PLACEHOLDER)
+                custom_allowed_now = allow_custom
+                if (
+                    next_selection not in unit_options
+                    or (next_selection == CUSTOM_UNIT_OPTION and not custom_allowed_now)
+                ):
+                    st.session_state[unit_key] = UNIT_PLACEHOLDER
+                    st.session_state[unit_custom_key] = ""
+                    st.session_state[unit_reset_key] = unit_required
+                elif next_selection != UNIT_PLACEHOLDER or unit_required:
+                    # Retain choice; clear reset message if valid.
+                    st.session_state[unit_reset_key] = False
+            st.session_state[unit_prev_sub_key] = sub
+
+            unit_label = "Unit*" if unit_required else "Unit"
+            unit = r2_c3.selectbox(
+                unit_label,
+                unit_options,
+                index=unit_options.index(st.session_state.get(unit_key, UNIT_PLACEHOLDER)),
+                key=unit_key,
+            )
+            if unit == CUSTOM_UNIT_OPTION and allow_custom:
+                custom_value = r2_c3.text_input(
+                    " ", value=st.session_state.get(unit_custom_key, ""), key=unit_custom_key
+                )
+                st.session_state[unit_custom_key] = custom_value
+            else:
+                st.session_state[unit_custom_key] = ""
+
+            if unit_required and st.session_state.get(unit_reset_key):
+                if unit not in (UNIT_PLACEHOLDER, CUSTOM_UNIT_OPTION):
+                    st.session_state[unit_reset_key] = False
+                elif unit == CUSTOM_UNIT_OPTION and st.session_state.get(unit_custom_key, "").strip():
+                    st.session_state[unit_reset_key] = False
+
+            if unit_required and st.session_state.get(unit_reset_key):
+                r2_c3.caption("Unit reset — please choose a unit for this sub-category.")
+
+            # Row 3 — Unit Cost | Quantity
+            cost_col, qty_col = st.columns(2)
+            uc = cost_col.number_input("Unit Cost (USD)*", min_value=0.0, value=0.0, step=10.0, format="%.2f",
+                                       key=f"{form_prefix}_uc")
+            qty = qty_col.number_input("Qty*", min_value=0.0, value=1.0, step=1.0, format="%.2f",
+                                       key=f"{form_prefix}_qty")
             line_total = float(uc) * float(qty)
+
+            if unit == UNIT_PLACEHOLDER:
+                final_unit = ""
+            elif unit == CUSTOM_UNIT_OPTION and allow_custom:
+                final_unit = st.session_state.get(unit_custom_key, "").strip()
+            else:
+                final_unit = unit
 
             cL, cR = st.columns([0.20, 0.80])
             if cL.button("Add line", key=f"add_line_btn_{a['id']}"):
                 if not item.strip():
                     st.warning("Line Item is required.")
-                elif not cat or not sub or sub == "(none)":
+                elif not current_cat or not sub or sub == "(none)":
                     st.warning("Pick a Cost Category and Sub Category.")
-                elif not str(unit).strip():
-                    st.warning("Pick or type a Unit.")
+                elif unit_required and not final_unit:
+                    st.warning("Please choose a Unit for this Sub Category.")
                 elif uc <= 0 or qty <= 0:
                     st.warning("Unit cost and quantity must be positive.")
                 else:
@@ -2801,14 +2913,15 @@ with tabs[4]:
                         "id": generate_id(),
                         "activity_id": a["id"],  # ← the link is here
                         "item": item.strip(),
-                        "category": cat,
+                        "category": current_cat,
                         "subcategory": sub,
-                        "unit": unit.strip(),
+                        "unit": final_unit.strip(),
                         "unit_cost": float(uc),
                         "qty": float(qty),
                         "currency": "USD",
                         "total_usd": line_total,
                     })
+                    st.session_state[unit_reset_key] = False
                     st.rerun()
 
             cR.markdown(f"<div style='text-align:right; font-weight:700;'>USD {line_total:,.2f}</div>",
@@ -2842,9 +2955,6 @@ with tabs[4]:
                 st.session_state[f"e_sub_{rid}"] = cur_subs[0]
             else:
                 st.session_state.setdefault(f"e_sub_{rid}", rec.get("subcategory"))
-            unit_init = rec.get("unit") if rec.get("unit") in UNIT_DROPDOWN else "Custom…"
-            st.session_state.setdefault(f"e_unit_choice_{rid}", unit_init)
-            st.session_state.setdefault(f"e_unit_custom_{rid}", ("" if unit_init != "Custom…" else rec.get("unit","")))
             st.session_state.setdefault(f"e_uc_{rid}", float(rec.get("unit_cost") or 0.0))
             st.session_state.setdefault(f"e_qty_{rid}", float(rec.get("qty") or 0.0))
 
@@ -2885,25 +2995,98 @@ with tabs[4]:
             # 4) Unit | Unit Cost | Quantity
             eu, euc, eqty = st.columns([0.42, 0.29, 0.29])
 
-            unit_opts_e = unit_options_for_sub(st.session_state[f"e_sub_{rid}"])
-            if st.session_state.get(f"e_unit_choice_{rid}") not in unit_opts_e:
-                st.session_state[f"e_unit_choice_{rid}"] = unit_opts_e[0] if unit_opts_e else "Custom…"
+            unit_choice_key = f"e_unit_choice_{rid}"
+            unit_custom_key = f"e_unit_custom_{rid}"
+            unit_prev_sub_key = f"e_unit_prev_sub_{rid}"
+            unit_reset_key = f"e_unit_reset_{rid}"
 
-            st.session_state[f"e_unit_choice_{rid}"] = eu.selectbox(
-                "Unit",
+            unit_values_e, unit_required_e = unit_choices_for(
+                st.session_state[f"e_cat_{rid}"], st.session_state[f"e_sub_{rid}"]
+            )
+            allow_custom_e = not unit_required_e
+            option_candidates_e = [UNIT_PLACEHOLDER] + unit_values_e
+            if allow_custom_e:
+                option_candidates_e.append(CUSTOM_UNIT_OPTION)
+
+            unit_opts_e = []
+            seen_opts_e = set()
+            for opt in option_candidates_e:
+                if opt and opt not in seen_opts_e:
+                    seen_opts_e.add(opt)
+                    unit_opts_e.append(opt)
+
+            existing_unit = rec.get("unit", "").strip()
+            if (
+                existing_unit
+                and existing_unit not in seen_opts_e
+                and st.session_state[f"e_sub_{rid}"] == rec.get("subcategory")
+            ):
+                insert_at = 1 if UNIT_PLACEHOLDER in unit_opts_e else 0
+                unit_opts_e.insert(insert_at, existing_unit)
+                seen_opts_e.add(existing_unit)
+
+            if unit_choice_key not in st.session_state:
+                default_choice = existing_unit or UNIT_PLACEHOLDER
+                if default_choice not in unit_opts_e:
+                    default_choice = UNIT_PLACEHOLDER
+                st.session_state[unit_choice_key] = default_choice
+            if unit_custom_key not in st.session_state:
+                st.session_state[unit_custom_key] = ""
+            st.session_state.setdefault(unit_reset_key, False)
+
+            if st.session_state[unit_choice_key] not in unit_opts_e:
+                st.session_state[unit_choice_key] = UNIT_PLACEHOLDER
+                st.session_state[unit_reset_key] = unit_required_e
+
+            prev_sub_edit = st.session_state.get(unit_prev_sub_key)
+            if prev_sub_edit is not None and prev_sub_edit != st.session_state[f"e_sub_{rid}"]:
+                selected_choice = st.session_state.get(unit_choice_key, UNIT_PLACEHOLDER)
+                if (
+                    selected_choice not in unit_opts_e
+                    or (selected_choice == CUSTOM_UNIT_OPTION and not allow_custom_e)
+                ):
+                    st.session_state[unit_choice_key] = UNIT_PLACEHOLDER
+                    st.session_state[unit_custom_key] = ""
+                    st.session_state[unit_reset_key] = unit_required_e
+                elif selected_choice != UNIT_PLACEHOLDER or unit_required_e:
+                    st.session_state[unit_reset_key] = False
+            st.session_state[unit_prev_sub_key] = st.session_state[f"e_sub_{rid}"]
+
+            st.session_state[unit_choice_key] = eu.selectbox(
+                "Unit" + ("*" if unit_required_e else ""),
                 unit_opts_e,
-                index=unit_opts_e.index(st.session_state[f"e_unit_choice_{rid}"])
-                if st.session_state[f"e_unit_choice_{rid}"] in unit_opts_e else len(unit_opts_e) - 1,
+                index=unit_opts_e.index(st.session_state[unit_choice_key]),
                 key=f"e_unit_choice_box_{rid}"
             )
-            if st.session_state[f"e_unit_choice_{rid}"] == "Custom…":
-                st.session_state[f"e_unit_custom_{rid}"] = eu.text_input(
-                    " ", value=st.session_state.get(f"e_unit_custom_{rid}", ""), key=f"e_unit_custom_key_{rid}"
+            if st.session_state[unit_choice_key] == CUSTOM_UNIT_OPTION and allow_custom_e:
+                st.session_state[unit_custom_key] = eu.text_input(
+                    " ", value=st.session_state.get(unit_custom_key, ""), key=f"e_unit_custom_key_{rid}"
                 )
+            else:
+                if st.session_state[unit_choice_key] != CUSTOM_UNIT_OPTION:
+                    st.session_state[unit_custom_key] = ""
+                if st.session_state.get(unit_reset_key) and st.session_state[unit_choice_key] not in (
+                    UNIT_PLACEHOLDER,
+                    CUSTOM_UNIT_OPTION,
+                ):
+                    st.session_state[unit_reset_key] = False
 
-            final_unit_e = (st.session_state[f"e_unit_custom_{rid}"].strip()
-                            if st.session_state[f"e_unit_choice_{rid}"] == "Custom…"
-                            else st.session_state[f"e_unit_choice_{rid}"])
+            if st.session_state.get(unit_reset_key):
+                if st.session_state[unit_choice_key] == CUSTOM_UNIT_OPTION:
+                    if st.session_state.get(unit_custom_key, "").strip():
+                        st.session_state[unit_reset_key] = False
+                elif st.session_state[unit_choice_key] != UNIT_PLACEHOLDER:
+                    st.session_state[unit_reset_key] = False
+
+            if unit_required_e and st.session_state.get(unit_reset_key):
+                eu.caption("Unit reset — please choose a unit for this sub-category.")
+
+            if st.session_state[unit_choice_key] == UNIT_PLACEHOLDER:
+                final_unit_e = ""
+            elif st.session_state[unit_choice_key] == CUSTOM_UNIT_OPTION and allow_custom_e:
+                final_unit_e = st.session_state.get(unit_custom_key, "").strip()
+            else:
+                final_unit_e = st.session_state[unit_choice_key]
 
             st.session_state[f"e_uc_{rid}"]  = euc.number_input(
                 "Unit Cost (USD)*", min_value=0.0, value=float(st.session_state[f"e_uc_{rid}"]),
@@ -2925,8 +3108,8 @@ with tabs[4]:
                     st.warning("Cost Category is required.")
                 elif not st.session_state[f"e_sub_{rid}"] or st.session_state[f"e_sub_{rid}"] == "(none)":
                     st.warning("Sub Category is required.")
-                elif not str(final_unit_e).strip():
-                    st.warning("Please select or type a Unit.")
+                elif unit_required_e and not str(final_unit_e).strip():
+                    st.warning("Please choose a Unit for this Sub Category.")
                 elif float(st.session_state[f"e_uc_{rid}"]) <= 0 or float(st.session_state[f"e_qty_{rid}"]) <= 0:
                     st.warning("Unit cost and quantity must be positive.")
                 else:
