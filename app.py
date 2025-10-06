@@ -1893,6 +1893,7 @@ with tabs[1]:
     budget_total = sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
     outputs_count = len(st.session_state.get("outputs", []))
     kpis_count = len(st.session_state.get("kpis", []))
+    activities_count = len(st.session_state.get("workplan", []))
 
     # (optional) project duration in months as an extra metric
     start = st.session_state.get("id_info", {}).get("start_date")
@@ -1966,6 +1967,12 @@ with tabs[1]:
         <div class="badge badge-indigo">📦</div>
         <h4>Outputs</h4>
         <div class="value">{outputs_count:,}</div>
+      </div>
+
+      <div class="card">
+        <div class="badge badge-green">🗂️</div>
+        <h4>Workplan Activities</h4>
+        <div class="value">{activities_count:,}</div>
       </div>
 
       <div class="card">
