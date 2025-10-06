@@ -1648,24 +1648,37 @@ Please complete each section of your project:
 3. **Workplan** – Add **Activities** linked to Outputs/KPIs with dates.
 4. **Budget** – Add **Budget lines** linked to Activities.
 5. **Disbursement Schedule** – Add **KPI-Linked Milestones** with dates and amounts.
-6. **Export** – Use the export tools as follows:  
-   - **Create a backup file (Excel):** You can do this at any stage to save your progress and continue working later.  
-   - **Generate a Project Design Document (Word):** Create a formatted project document to review how your application looks in report form.  
-   - **Generate a Project Package (ZIP):** At the final stage you will create a password-protected ZIP file for submission to GLIDE. *This feature is planned but not yet available in the portal.*  
+6. **Export** – Use the export tools as follows:
+   - **Create a backup file (Excel):** You can do this at any stage to save your progress and continue working later.
+   - **Generate a Project Design Document (Word):** Create a formatted project document to review how your application looks in report form.
+   - **Generate a Project Package (ZIP):** At the final stage you will create a password-protected ZIP file for submission to GLIDE. *This feature is planned but not yet available in the portal.*
 
-### Definitions
-- **Goal**: The long-term vision (impact).
-- **Outcome**: The specific change expected from the project.
-- **Output**: Tangible products/services delivered by the project.
-- **Key Performance Indicator (KPI)**: Quantifiable metric to judge performance (with baseline, target, dates, MoV).
-- **Activity**: Tasks that produce Outputs (scheduled in the Workplan).
-- **Budget line**: A costed item linked to an activity (category, unit, quantity, unit cost). Together, the budget lines under an activity represent the resources required to implement it.
-- **Assumptions**: External conditions necessary for success.
-- **Means of Verification (MoV)**: Where/how the KPI will be measured.
-- **Payment-linked indicator**: KPI that triggers funding release when achieved (optional).
-
-"""
+""",
 )
+
+definitions = [
+    ("Goal", "The long-term vision (impact)."),
+    ("Outcome", "The specific change expected from the project."),
+    ("Output", "Tangible products/services delivered by the project."),
+    (
+        "Key Performance Indicator (KPI)",
+        "Quantifiable metric to judge performance (with baseline, target, dates, MoV).",
+    ),
+    ("Activity", "Tasks that produce Outputs (scheduled in the Workplan)."),
+    (
+        "Budget line",
+        "A costed item linked to an activity (category, unit, quantity, unit cost). Together, the budget lines under an activity represent the resources required to implement it.",
+    ),
+    ("Assumptions", "External conditions necessary for success."),
+    ("Means of Verification (MoV)", "Where/how the KPI will be measured."),
+    (
+        "Payment-linked indicator",
+        "KPI that triggers funding release when achieved (optional).",
+    ),
+]
+
+definition_lines = "\n".join(f"- **{term}**: {description}" for term, description in definitions)
+tabs[0].info(f"**Definitions**\n\n{definition_lines}")
 # **Contact us**: Anderson E. Stanciole | astanciole@glideae.org
 
 # --- Resume from Excel ---
