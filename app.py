@@ -2027,14 +2027,14 @@ with tabs[1]:
         sd = st.date_input(
             "Project start date",
             value=start_default,
-            format="DD/MMM/YYYY",
+            format="DD/MM/YYYY",
             key="id_start_date",
         )
     with date_cols[1]:
         ed = st.date_input(
             "Project end date",
             value=end_default if end_default else sd,
-            format="DD/MMM/YYYY",
+            format="DD/MM/YYYY",
             key="id_end_date",
         )
 
