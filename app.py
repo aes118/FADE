@@ -2883,7 +2883,11 @@ with tabs[4]:
 
             rid = rec["id"]
             st.session_state.setdefault(f"e_item_{rid}", rec.get("item",""))
-            st.session_state.setdefault(f"e_act_lbl_{rid}", _activity_label(rec.get("activity_id")))
+            # migrate away from legacy label-based state keys if present
+            legacy_act_label_key = f"e_act_lbl_{rid}"
+            if legacy_act_label_key in st.session_state:
+                st.session_state.pop(legacy_act_label_key, None)
+            st.session_state.setdefault(f"e_act_id_{rid}", rec.get("activity_id"))
             st.session_state.setdefault(f"e_cat_{rid}", rec.get("category") or list(CATEGORY_TREE.keys())[0])
 
             cur_subs = subcategories_for(st.session_state[f"e_cat_{rid}"]) or ["(none)"]
@@ -2906,13 +2910,27 @@ with tabs[4]:
             )
 
             # Linked Activity
-            act_menu = ["(none)"] + [act_lookup[aid] for aid in act_lookup]
-            st.session_state[f"e_act_lbl_{rid}"] = st.selectbox(
-                "Linked Activity (optional)", act_menu,
-                index=act_menu.index(st.session_state[f"e_act_lbl_{rid}"])
+            act_state_key = f"e_act_id_{rid}"
+            act_options = [None] + [aid for aid in act_lookup]
+
+            current_act_id = st.session_state.get(act_state_key)
+            if current_act_id not in act_options:
+                current_act_id = None
+                st.session_state[act_state_key] = None
+
+            def _format_act_option(aid):
+                if aid is None:
+                    return "(none)"
+                return act_lookup.get(aid, "(unavailable)")
+
+            selected_act_id = st.selectbox(
+                "Linked Activity (optional)",
+                act_options,
+                index=act_options.index(current_act_id),
+                format_func=_format_act_option,
+                key=act_state_key,
             )
-            new_act_id = None if st.session_state[f"e_act_lbl_{rid}"] == "(none)" else \
-                next(aid for aid, lab in act_lookup.items() if lab == st.session_state[f"e_act_lbl_{rid}"])
+            new_act_id = selected_act_id
 
             # Category | Sub-Category
             ec, es = st.columns(2)
