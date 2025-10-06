@@ -162,6 +162,39 @@ def compute_numbers(include_activities: bool = False):
                 q += 1
     return out_num, kpi_num, act_num
 
+
+def format_activity_label(activity: dict, act_nums: dict, *, unknown_placeholder: str = "?") -> str:
+    """Return the standard display label for an activity."""
+    if not activity:
+        return ""
+
+    act_id = activity.get("id")
+    name = activity.get("name", "")
+    number = act_nums.get(act_id)
+
+    if not number:
+        number = unknown_placeholder or ""
+
+    prefix = f"Activity {number}".strip()
+    if not prefix:
+        prefix = "Activity"
+
+    if name:
+        return f"{prefix} — {name}"
+    return prefix
+
+
+def activity_label_map(act_nums=None, *, unknown_placeholder: str = "?") -> dict:
+    """Build a {activity_id -> label} mapping reused across tables/exports."""
+    if act_nums is None:
+        _, _, act_nums = compute_numbers(include_activities=True)
+
+    return {
+        a["id"]: format_activity_label(a, act_nums, unknown_placeholder=unknown_placeholder)
+        for a in st.session_state.get("workplan", [])
+    }
+
+
 def _workplan_df():
     """Return a tidy DF with Activity/Output labels and metadata (rows that have both dates)."""
     import pandas as pd
@@ -450,6 +483,36 @@ def view_logframe_element(inner_html: str, kind: str = "output") -> str:
     """Wrap inner HTML in a styled card. kind: 'output' | 'kpi' (or others later)."""
     return f"<div class='lf-card lf-card--{kind}'>{inner_html}</div>"
 
+
+def _assumption_items(text: str) -> list:
+    """Return cleaned bullet items from a multiline assumptions string."""
+    items = []
+    for ln in (text or "").splitlines():
+        cleaned = re.sub(r"^[\-\u2022]\s*", "", str(ln)).strip()
+        if cleaned:
+            items.append(cleaned)
+    return items
+
+
+def _assumptions_html(text: str) -> str:
+    """HTML block (heading + list) for assumptions."""
+    items = _assumption_items(text)
+    if not items:
+        return ""
+    lis = "".join(f"<li>{html.escape(x)}</li>" for x in items)
+    return (
+        "<div class='lf-ass'>"
+        "<div class='lf-ass-heading'><b> Key Assumptions </b></div>"
+        f"<ul class='lf-ass-list'>{lis}</ul>"
+        "</div>"
+    )
+
+
+def _assumptions_doc_text(text: str) -> str:
+    """Plain text bullet list (with •) for Word export."""
+    items = _assumption_items(text)
+    return "\n".join(f"• {item}" for item in items)
+
 def sync_disbursement_from_kpis():
     """
     Keep st.session_state.disbursement in sync with KPIs:
@@ -661,7 +724,9 @@ def build_logframe_docx():
     _h1("LOGFRAME")
 
     # ---- Data & numbering
-    goal_text = (st.session_state.impacts[0]["name"] if st.session_state.get("impacts") else "")
+    goal = st.session_state.impacts[0] if st.session_state.get("impacts") else {}
+    goal_text = goal.get("name", "")
+    goal_assumptions_text = _assumptions_doc_text(goal.get("assumptions")) if goal else ""
     outcome_text = (st.session_state.outcomes[0]["name"] if st.session_state.get("outcomes") else "")
     out_nums, kpi_nums = compute_numbers()
 
@@ -694,6 +759,8 @@ def build_logframe_docx():
     # ---- GOAL & OUTCOME banners (keep these)
     if goal_text:
         _add_banner_block("GOAL", goal_text)
+        if goal_assumptions_text:
+            _add_banner_block("Goal - Key Assumptions", goal_assumptions_text)
 
     # ==== Outcome-level KPI table (separate) ====
     outcome_kpis = [k for k in st.session_state.get("kpis", []) if k.get("parent_level") == "Outcome"]
@@ -956,13 +1023,12 @@ def build_logframe_docx():
 
     # helpers for labels
     _, _, act_nums = compute_numbers(include_activities=True)
-    act_lookup = {a["id"]: f"Activity {act_nums.get(a['id'], '?')} — {a.get('name', '')}"
-                  for a in st.session_state.get("workplan", [])}
+    act_lookup = activity_label_map(act_nums)
 
     total_budget = 0.0
     for row in st.session_state.get("budget", []):
         rid = bt.add_row()
-        act_label = act_lookup.get(row.get("activity_id")) or ""
+        act_label = act_lookup.get(row.get("activity_id"), "")
         _set_cell_text(rid.cells[0], act_label)
         _set_cell_text(rid.cells[1], row.get("item", ""))
         _set_cell_text(rid.cells[2], row.get("category", ""))
@@ -1127,6 +1193,20 @@ def inject_logframe_css():
   box-shadow: 0 1px 2px rgba(0,0,0,.03);
   position: relative;               /* required for the left accent bar */
 }
+.lf-goal-header{ margin: 0; font-weight: 700; }
+
+/* ========= GOAL (blue) ========= */
+.lf-card--goal{
+  background: #E6F0FB;
+  border: 1px solid #7BA4D9;
+}
+.lf-card--goal::before{
+  content:"";
+  position:absolute; top:0; left:0; bottom:0; width:8px;
+  background:#4F7BB5;
+  border-top-left-radius:12px;
+  border-bottom-left-radius:12px;
+}
 
 /* ========= OUTPUT (green) ========= */
 .lf-card--output{
@@ -1181,19 +1261,19 @@ def inject_logframe_css():
 .lf-out-header{ margin: 0; font-weight: 700; }
 .lf-kpi-title{ font-weight: 600; margin-bottom: 6px; }
 
-/* Assumptions list inside the green Output card */
-.lf-card--output .lf-ass-heading{
+/* Assumptions list styling */
+.lf-ass-heading{
   font-weight: 600;
   margin: 6px 0 4px;                 /* tighter heading spacing */
 }
 
-.lf-card--output .lf-ass-list{
+.lf-ass-list{
   margin: 4px 0 0 1.15rem;           /* small left indent, no extra top gap */
   padding: 0;
   list-style: disc outside;
 }
 
-.lf-card--output .lf-ass-list li{
+.lf-ass-list li{
   margin: 0;                          /* remove extra gaps between items */
   padding: 0;
   font-style: italic;                 /* italics */
@@ -1644,10 +1724,21 @@ if uploaded_file is not None:
                 ass = _s(row.get("Assumptions"))
 
                 if lvl.lower() == "goal":
-                    st.session_state.impacts.append({"id": _id, "level": "Goal", "name": text})
+                    st.session_state.impacts.append({
+                        "id": _id,
+                        "level": "Goal",
+                        "name": text,
+                        "assumptions": ass,
+                    })
 
                 elif lvl.lower() == "outcome":
-                    st.session_state.outcomes.append({"id": _id, "level": "Outcome", "name": text, "parent_id": pid})
+                    st.session_state.outcomes.append({
+                        "id": _id,
+                        "level": "Outcome",
+                        "name": text,
+                        "parent_id": pid,
+                        "assumptions": ass,
+                    })
 
                 elif lvl.lower() == "output":
                     st.session_state.outputs.append({
@@ -1758,8 +1849,7 @@ if uploaded_file is not None:
                 # helper: map activity label back to id
                 # (recompute numbers after import of workplan if needed)
                 _, _, act_nums = compute_numbers(include_activities=True)
-                act_lookup = {a["id"]: f"Activity {act_nums.get(a['id'], '?')} — {a.get('name', '')}"
-                              for a in st.session_state.get("workplan", [])}
+                act_lookup = activity_label_map(act_nums)
                 label_to_act_id = {v: k for k, v in act_lookup.items()}
 
                 cols = set(bdf.columns)
@@ -2086,8 +2176,14 @@ with tabs[2].expander("➕ Add Goal"):
     else:
         with st.form("goal_form"):
             goal_text = st.text_area("Goal (single, high-level statement)")
+            goal_assumptions = st.text_area("Key Assumptions (optional)")
             if st.form_submit_button("Add Goal") and goal_text.strip():
-                st.session_state.impacts.append({"id": generate_id(), "level": "Goal", "name": goal_text.strip()})
+                st.session_state.impacts.append({
+                    "id": generate_id(),
+                    "level": "Goal",
+                    "name": goal_text.strip(),
+                    "assumptions": goal_assumptions.strip(),
+                })
 
 with tabs[2].expander("➕ Add Outcome"):
     if not st.session_state.impacts:
@@ -2190,7 +2286,10 @@ with tabs[2].expander("➕ Add KPI"):
 
 # ---- View helpers (card layout, compact-aware) ----
 def view_goal(g):
-    return f"##### 🟦 **Goal:** {g.get('name','')}"
+    title = escape(g.get("name", ""))
+    header_html = f"<div class='lf-goal-header'><strong>Goal:</strong> {title}</div>"
+    ass_html = _assumptions_html(g.get("assumptions"))
+    return view_logframe_element(header_html + ass_html, kind="goal")
 
 def view_outcome(o):
     return f"##### 🟪 **Outcome:** {o.get('name','')}"
@@ -2205,23 +2304,7 @@ def view_output(out):
     )
 
     # assumptions -> bullet list (one bullet per line the user typed)
-    ass = (out.get("assumptions") or "").strip()
-    ass_html = ""
-    if ass:
-        # strip any leading "-" or "•", ignore empty lines
-        items = [
-            re.sub(r"^[\-\u2022]\s*", "", ln).strip()
-            for ln in ass.splitlines()
-            if ln.strip()
-        ]
-        if items:
-            lis = "".join(f"<li>{html.escape(x)}</li>" for x in items)
-            ass_html = (
-                "<div class='lf-ass'>"
-                "<div class='lf-ass-heading'> <b> Key Assumptions </b> </div>"
-                f"<ul class='lf-ass-list'>{lis}</ul>"
-                "</div>"
-            )
+    ass_html = _assumptions_html(out.get("assumptions"))
 
     # wrap in the green card
     return view_logframe_element(header_html + ass_html, kind="output")
@@ -2320,7 +2403,10 @@ with tabs[2]:
             list_name="impacts",
             edit_flag_key="edit_goal",
             view_md_func=view_goal,
-            default_label="Goal",
+            fields=[
+                ("name", st.text_area, "Goal"),
+                ("assumptions", st.text_area, "Key Assumptions"),
+            ],
             on_delete=lambda _id=g["id"]: (delete_cascade(goal_id=_id), st.rerun()),
             key_prefix="lf"
         )
@@ -2526,11 +2612,11 @@ with tabs[4]:
     # ---------- lookups ----------
     activities = st.session_state.get("workplan", [])
     out_nums, _, act_nums = compute_numbers(include_activities=True)
-    act_lookup = {a["id"]: f"Activity {act_nums.get(a['id'],'?')} — {a.get('name','')}" for a in activities}
+    act_lookup = activity_label_map(act_nums)
     act_menu = ["(none)"] + [act_lookup[aid] for aid in act_lookup]
 
     def _activity_label(aid):
-        return act_lookup.get(aid) if aid in act_lookup else "(none)"
+        return act_lookup.get(aid, "(none)")
 
 
     # --- preload budget containers from workplan and group existing lines by activity ---
@@ -2607,7 +2693,7 @@ with tabs[4]:
 
 
     def _act_label(a):
-        return f"Activity {act_nums.get(a['id'], '?')} — {a.get('name', '')}"
+        return format_activity_label(a, act_nums)
 
 
     # Iterate activities in Workplan order (preloaded by ensure_budget_containers_from_workplan)
@@ -2931,11 +3017,17 @@ if tabs[6].button("Generate Excel Backup File"):
 
     # Goal rows
     for row in st.session_state.get("impacts", []):
-        s1.append(["Goal", row.get("id", ""), "", row.get("name", ""), ""])
+        s1.append(["Goal", row.get("id", ""), "", row.get("name", ""), row.get("assumptions", "")])
 
     # Outcome rows
     for row in st.session_state.get("outcomes", []):
-        s1.append(["Outcome", row.get("id", ""), row.get("parent_id", ""), row.get("name", ""), ""])
+        s1.append([
+            "Outcome",
+            row.get("id", ""),
+            row.get("parent_id", ""),
+            row.get("name", ""),
+            row.get("assumptions", ""),
+        ])
 
     # Output rows (include assumptions)
     for row in st.session_state.get("outputs", []):
@@ -3016,8 +3108,10 @@ if tabs[6].button("Generate Excel Backup File"):
     out_nums, _, act_nums = compute_numbers(include_activities=True)
     out_label = lambda oid: (f"Output {out_nums.get(oid, '')} — " + (
         next((o.get('name', '') for o in st.session_state.outputs if o['id'] == oid), ""))).strip(" —")
-    act_label = lambda aid: (f"Activity {act_nums.get(aid, '')} — " + (
-        next((a.get('name', '') for a in st.session_state.workplan if a['id'] == aid), ""))).strip(" —")
+    act_lookup = activity_label_map(act_nums)
+
+    def act_label(aid):
+        return (act_lookup.get(aid, "") or "").strip(" —")
 
     for r in st.session_state.get("budget", []):
         ws3.append([
