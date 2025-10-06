@@ -607,22 +607,43 @@ def _force_calibri_everywhere(doc):
                                 rFonts.set(qn("w:hAnsi"), "Calibri")
                                 rFonts.set(qn("w:cs"), "Calibri")
 
-def build_logframe_docx():
-    # Lazy import so app loads even if package is missing
+
+def render_pdd(context=None, gantt_image_path: str | None = None):
+    """Build the Project Design Document using the branding template with dynamic sections."""
     try:
         from docx import Document
         from docx.shared import Cm, RGBColor, Pt
         from docx.enum.text import WD_ALIGN_PARAGRAPH
         from docx.enum.table import WD_TABLE_ALIGNMENT
-        from docx.enum.section import WD_ORIENT
+        from docx.enum.section import WD_ORIENT, WD_SECTION_START
         from docx.oxml import OxmlElement
         from docx.oxml.ns import qn
-        from docx.shared import Pt
     except Exception:
         st.error("`python-docx` is required. In your venv run:\n  pip uninstall -y docx\n  pip install -U python-docx")
         raise
 
     PRIMARY_SHADE = "0A2F41"
+
+    from io import BytesIO
+    from pathlib import Path
+
+    template_path = Path("templates/pdd_template.docx")
+    if not template_path.exists():
+        st.error(f"Template not found: {template_path}")
+        raise FileNotFoundError(f"Template not found: {template_path}")
+
+    doc = Document(str(template_path))
+
+    body = doc.element.body
+    for child in list(body):
+        body.remove(child)
+
+    def _set_orientation(section, orientation):
+        section.orientation = orientation
+        if orientation == WD_ORIENT.LANDSCAPE and section.page_width < section.page_height:
+            section.page_width, section.page_height = section.page_height, section.page_width
+        if orientation == WD_ORIENT.PORTRAIT and section.page_width > section.page_height:
+            section.page_width, section.page_height = section.page_height, section.page_width
 
     def _shade(cell, hex_fill):
         tcPr = cell._tc.get_or_add_tcPr()
@@ -639,10 +660,10 @@ def build_logframe_docx():
 
     def _set_cell_text(cell, text, *, bold=False, white=False, align_left=True):
         cell.text = ""
-        p = cell.paragraphs[0]
+        paragraph = cell.paragraphs[0]
         if align_left:
-            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        run = p.add_run(text or "")
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        run = paragraph.add_run(text or "")
         run.bold = bool(bold)
         run.font.name = "Calibri"
         run.font.size = Pt(10)
@@ -656,75 +677,95 @@ def build_logframe_docx():
         if white:
             run.font.color.rgb = RGBColor(255, 255, 255)
 
-    def _add_run(p, text, bold=False):
-        run = p.add_run(text or "")
+    def _add_run(paragraph, text, bold=False):
+        run = paragraph.add_run(text or "")
         run.bold = bold
         run.font.name = "Calibri"
         run.font.size = Pt(10)
         return run
 
+    def _content_width_cm(section):
+        return section.page_width.cm - section.left_margin.cm - section.right_margin.cm
+
+    def _h1(text_value):
+        paragraph = doc.add_paragraph(text_value)
+        paragraph.style = doc.styles['Heading 1']
+        return paragraph
+
     def _new_landscape_section(title):
-        sec = doc.add_section(WD_SECTION_START.NEW_PAGE)
-        sec.orientation = WD_ORIENT.LANDSCAPE
-        # Only swap dimensions if the section is still portrait-sized.
-        if sec.page_width < sec.page_height:
-            sec.page_width, sec.page_height = sec.page_height, sec.page_width
+        section = doc.add_section(WD_SECTION_START.NEW_PAGE)
+        _set_orientation(section, WD_ORIENT.LANDSCAPE)
         _h1(title)
-        return sec
+        return section
 
     def _ensure_portrait_section(title):
-        sec = doc.add_section(WD_SECTION_START.NEW_PAGE)
-        sec.orientation = WD_ORIENT.PORTRAIT
-        # ensure portrait proportions
-        if sec.page_width > sec.page_height:
-            sec.page_width, sec.page_height = sec.page_height, sec.page_width
+        section = doc.add_section(WD_SECTION_START.NEW_PAGE)
+        _set_orientation(section, WD_ORIENT.PORTRAIT)
         _h1(title)
-        return sec
-
-    def _content_width_cm(sec):
-        # use .cm to avoid manual EMU conversion
-        return sec.page_width.cm - sec.left_margin.cm - sec.right_margin.cm
-
-    def _h1(text):
-        p = doc.add_paragraph(text)
-        p.style = doc.styles['Heading 1']
-        return p
-
-    def _new_section(title):
-        # page/section break + H1
-        doc.add_section(WD_SECTION_START.NEW_PAGE)
-        _h1(title)
-
-    from io import BytesIO
+        return section
 
     def _gantt_png_buf():
-        """Render the workplan Gantt to a PNG buffer for docx embedding."""
         import matplotlib.pyplot as plt
+
         df = _workplan_df()
         if df.empty:
             return None
-        h = min(1.2 + 0.35 * len(df), 12)  # scale height with number of rows
-        fig, ax = plt.subplots(figsize=(11, h))
+
+        height = min(1.2 + 0.35 * len(df), 12)
+        fig, ax = plt.subplots(figsize=(11, height))
         _draw_gantt(ax, df, show_today=False)
-        # extra space for legend + rotated ticks
         fig.subplots_adjust(left=0.30, right=0.995, top=0.96, bottom=0.36)
-        buf = BytesIO()
-        # 'tight' ensures nothing gets cut off (legend, labels)
-        fig.savefig(buf, format="png", dpi=220, bbox_inches="tight")
+        buffer = BytesIO()
+        fig.savefig(buffer, format="png", dpi=220, bbox_inches="tight")
         plt.close(fig)
-        buf.seek(0)
-        return buf
+        buffer.seek(0)
+        return buffer
 
-    # ---- Document setup: Portrait + standard margins
-    doc = Document()
-    sec = doc.sections[0]
-    sec.orientation = WD_ORIENT.PORTRAIT
-    for side in ("top_margin", "bottom_margin", "left_margin", "right_margin"):
-        setattr(sec, side, Cm(2.54))
+    first_section = doc.sections[0]
+    _set_orientation(first_section, WD_ORIENT.PORTRAIT)
 
-    _h1("LOGFRAME")
+    _h1("Project Overview")
 
-    # ---- Data & numbering
+    id_info = st.session_state.get("id_info", {}) or {}
+    budget_total = sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
+    outputs_count = len(st.session_state.get("outputs", []))
+    kpis_count = len(st.session_state.get("kpis", []))
+    activities_count = len(st.session_state.get("workplan", []))
+
+    overview_rows = [
+        ("Project title", id_info.get("title", "")),
+        ("Principal Investigator (PI) name", id_info.get("pi_name", "")),
+        ("PI email", id_info.get("pi_email", "")),
+        ("Implementing Partner(s)", id_info.get("implementing_partners", "")),
+        ("Supporting Partners", id_info.get("supporting_partners", "")),
+        ("Project start date", fmt_dd_mmm_yyyy(id_info.get("start_date"))),
+        ("Project end date", fmt_dd_mmm_yyyy(id_info.get("end_date"))),
+        ("Implementation location", id_info.get("location", "")),
+        ("Main Contact person (Optional)", id_info.get("contact_name", "")),
+        ("Main Contact email (Optional)", id_info.get("contact_email", "")),
+        ("Contact phone (Optional)", id_info.get("contact_phone", "")),
+        ("Total Funding requested (From Budget)", f"USD {budget_total:,.2f}"),
+        ("# Outputs (read-only; count from Logframe)", str(outputs_count)),
+        ("# KPIs (read-only; count from Logframe)", str(kpis_count)),
+        ("# Activities (read-only; count from Workplan)", str(activities_count)),
+    ]
+
+    overview_table = doc.add_table(rows=len(overview_rows), cols=2)
+    overview_table.style = "Table Grid"
+    overview_table.alignment = WD_TABLE_ALIGNMENT.LEFT
+
+    for idx, width in enumerate((Cm(6.0), Cm(11.0))):
+        for row in overview_table.rows:
+            row.cells[idx].width = width
+        overview_table.columns[idx].width = width
+
+    for row_idx, (label, value) in enumerate(overview_rows):
+        _set_cell_text(overview_table.cell(row_idx, 0), str(label), bold=True)
+        _set_cell_text(overview_table.cell(row_idx, 1), _s(value))
+
+    doc.add_paragraph("")
+    _h1("Logframe")
+
     goal = st.session_state.impacts[0] if st.session_state.get("impacts") else {}
     goal_text = goal.get("name", "")
     goal_assumptions_text = _assumptions_doc_text(goal.get("assumptions")) if goal else ""
@@ -739,249 +780,191 @@ def build_logframe_docx():
         except Exception:
             return (9999,)
 
-    # ---- Helper: add a 2-row banner (label row shaded, content row unshaded)
-    def _add_banner_block(label_text, content_text):
-        t = doc.add_table(rows=2, cols=4)
-        t.style = "Table Grid"
-        t.alignment = WD_TABLE_ALIGNMENT.LEFT
-        # Row 0: label
-        r0 = t.rows[0]
-        c0 = r0.cells[0]
-        c0.merge(r0.cells[3])
-        _shade(c0, PRIMARY_SHADE)
-        _set_cell_text(c0, label_text.upper(), bold=True, white=True)
-        # Row 1: content
-        r1 = t.rows[1]
-        c1 = r1.cells[0]
-        c1.merge(r1.cells[3])
-        _set_cell_text(c1, content_text or "")
-        doc.add_paragraph("")
-
-    # ---- GOAL table with adjacent Key Assumptions column
     if goal_text or goal_assumptions_text:
-        from docx.shared import Cm
-
         tbl_goal = doc.add_table(rows=1, cols=2)
         tbl_goal.style = "Table Grid"
         tbl_goal.alignment = WD_TABLE_ALIGNMENT.LEFT
-        tbl_goal.autofit = True
-
-        labels = ("Goal", "Key Assumptions")
         hdr = tbl_goal.rows[0]
-        for i, lab in enumerate(labels):
-            _set_cell_text(hdr.cells[i], lab, bold=True, white=True)
-            _shade(hdr.cells[i], PRIMARY_SHADE)
+        for idx, lab in enumerate(("Goal", "Key Assumptions")):
+            _set_cell_text(hdr.cells[idx], lab, bold=True, white=True)
+            _shade(hdr.cells[idx], PRIMARY_SHADE)
         _repeat_header(hdr)
 
         col_widths_goal = (Cm(12.0), Cm(12.0))
-        for i, width in enumerate(col_widths_goal):
-            hdr.cells[i].width = width
-            tbl_goal.columns[i].width = width
+        for idx, width in enumerate(col_widths_goal):
+            hdr.cells[idx].width = width
+            tbl_goal.columns[idx].width = width
 
-        body = tbl_goal.add_row()
-        for i, width in enumerate(col_widths_goal):
-            body.cells[i].width = width
-        _set_cell_text(body.cells[0], goal_text or "—")
-        _set_cell_text(body.cells[1], goal_assumptions_text or "—")
+        body_row = tbl_goal.add_row()
+        for idx, width in enumerate(col_widths_goal):
+            body_row.cells[idx].width = width
+        _set_cell_text(body_row.cells[0], goal_text or "—")
+        _set_cell_text(body_row.cells[1], goal_assumptions_text or "—")
         doc.add_paragraph("")
 
-    # ==== Outcome-level KPI table (separate) ====
     outcome_kpis = [k for k in st.session_state.get("kpis", []) if k.get("parent_level") == "Outcome"]
-
     if outcome_kpis:
-        k = outcome_kpis[0]  # only one allowed
-
+        outcome_kpi = outcome_kpis[0]
         tbl_outcome = doc.add_table(rows=1, cols=4)
         tbl_outcome.style = "Table Grid"
         tbl_outcome.alignment = WD_TABLE_ALIGNMENT.LEFT
-        tbl_outcome.autofit = True
-
-        # same headers as the main table to keep visual consistency
         hdr = tbl_outcome.rows[0]
-        labels = ("Outcome", "KPI", "Means of Verification", "Key Assumptions")
-        for i, lab in enumerate(labels):
-            _set_cell_text(hdr.cells[i], lab, bold=True, white=True)
-            _shade(hdr.cells[i], PRIMARY_SHADE)
+        for idx, lab in enumerate(("Outcome", "KPI", "Means of Verification", "Key Assumptions")):
+            _set_cell_text(hdr.cells[idx], lab, bold=True, white=True)
+            _shade(hdr.cells[idx], PRIMARY_SHADE)
         _repeat_header(hdr)
 
-        # set stable column widths so Word won't squash them
-        from docx.shared import Cm
-        col_widths = (Cm(6.0), Cm(9.0), Cm(6.0), Cm(6.0))
-        for i, w in enumerate(col_widths):
-            for r in tbl_outcome.rows:
-                r.cells[i].width = w
-            tbl_outcome.columns[i].width = w
+        col_widths_outcome = (Cm(6.0), Cm(9.0), Cm(6.0), Cm(6.0))
+        for idx, width in enumerate(col_widths_outcome):
+            for row in tbl_outcome.rows:
+                row.cells[idx].width = width
+            tbl_outcome.columns[idx].width = width
 
-        r = tbl_outcome.add_row()
-        for i, w in enumerate(col_widths):
-            r.cells[i].width = w
+        row = tbl_outcome.add_row()
+        for idx, width in enumerate(col_widths_outcome):
+            row.cells[idx].width = width
 
-        # Col 0: Outcome text
-        _set_cell_text(r.cells[0], outcome_text or "")
+        _set_cell_text(row.cells[0], outcome_text or "")
 
-        # Col 1: KPI details (same style as other KPIs)
-        kcell = r.cells[1]; kcell.text = ""
-        p = kcell.paragraphs[0]
-        _add_run(p, f"Outcome KPI — {k.get('name','')}")
-        p.add_run("\n")
-        bp = (k.get("baseline","") or "").strip()
-        if bp: _add_run(p, "Baseline: ", True); _add_run(p, bp); p.add_run("\n")
-        tg = (k.get("target","") or "").strip()
-        if tg: _add_run(p, "Target: ", True); _add_run(p, tg); p.add_run("\n")
+        k_cell = row.cells[1]
+        k_cell.text = ""
+        para = k_cell.paragraphs[0]
+        _add_run(para, f"Outcome KPI — {outcome_kpi.get('name','')}")
+        para.add_run("\n")
+        baseline = (outcome_kpi.get("baseline", "") or "").strip()
+        if baseline:
+            _add_run(para, "Baseline: ", True)
+            _add_run(para, baseline)
+            para.add_run("\n")
+        target = (outcome_kpi.get("target", "") or "").strip()
+        if target:
+            _add_run(para, "Target: ", True)
+            _add_run(para, target)
+            para.add_run("\n")
 
-        # Col 2: MoV
-        _set_cell_text(r.cells[2], (k.get("mov") or "").strip() or "—")
-
-        # Col 3: Assumptions at outcome level (leave blank or em dash)
-        _set_cell_text(r.cells[3], "—")
-
-        # a little whitespace before the next table
+        _set_cell_text(row.cells[2], (outcome_kpi.get("mov") or "").strip() or "—")
+        _set_cell_text(row.cells[3], "—")
         doc.add_paragraph("")
 
-    # ==== Main Outputs + KPIs table ====
     tbl = doc.add_table(rows=1, cols=4)
     tbl.style = "Table Grid"
     tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
-    tbl.autofit = True
-
-    # match your main table header exactly
     hdr = tbl.rows[0]
-    labels = ("Output", "KPI", "Means of Verification", "Key Assumptions")
-    for i, lab in enumerate(labels):
-        _set_cell_text(hdr.cells[i], lab, bold=True, white=True)
-        _shade(hdr.cells[i], PRIMARY_SHADE)
+    for idx, lab in enumerate(("Output", "KPI", "Means of Verification", "Key Assumptions")):
+        _set_cell_text(hdr.cells[idx], lab, bold=True, white=True)
+        _shade(hdr.cells[idx], PRIMARY_SHADE)
     _repeat_header(hdr)
 
-    # set widths for the main table too (tweak if you prefer your prior numbers)
     col_widths_main = (Cm(6.0), Cm(9.0), Cm(6.0), Cm(6.0))
-    for i, w in enumerate(col_widths_main):
-        for r in tbl.rows:
-            r.cells[i].width = w
-        tbl.columns[i].width = w
+    for idx, width in enumerate(col_widths_main):
+        for row in tbl.rows:
+            row.cells[idx].width = width
+        tbl.columns[idx].width = width
 
-    # --- your existing Outputs & KPIs loop (unchanged) ---
-    outputs = st.session_state.get("outputs", [])
-    out_nums, kpi_nums = compute_numbers()
+    outputs = sorted(st.session_state.get("outputs", []), key=lambda o: _sort_by_num(out_nums.get(o.get("id"))))
+    for output in outputs:
+        out_id = output.get("id")
+        out_label = out_nums.get(out_id)
+        out_name = output.get("name", "")
+        assumptions_txt = _assumptions_doc_text(output.get("assumptions"))
+        kpi_rows = [k for k in st.session_state.get("kpis", []) if k.get("parent_id") == out_id]
+        kpi_rows = sorted(kpi_rows, key=lambda k: _sort_by_num(kpi_nums.get(k.get("id"))))
 
-    def _sort_by_num(label):
-        if not label: return (9999,)
-        try: return tuple(int(x) for x in str(label).split("."))
-        except: return (9999,)
-
-    outputs = sorted(outputs, key=lambda o: _sort_by_num(out_nums.get(o["id"], "")))
-
-    for out in outputs:
-        out_num = out_nums.get(out["id"], "")
-        # exclude outcome-level KPIs from this table
-        kpis = [k for k in st.session_state.get("kpis", [])
-                if k.get("parent_id") == out["id"] and k.get("parent_level") != "Outcome"]
-
-        if not kpis:
-            r = tbl.add_row()
-            for i, w in enumerate(col_widths_main): r.cells[i].width = w
-            _set_cell_text(r.cells[0], f"Output {out_num} — {out.get('name','')}")
-            _set_cell_text(r.cells[1], "—")
-            _set_cell_text(r.cells[2], "—")
-            _set_cell_text(r.cells[3], out.get("assumptions","") or "—")
+        if not kpi_rows:
+            row = tbl.add_row()
+            for idx, width in enumerate(col_widths_main):
+                row.cells[idx].width = width
+            label = f"Output {out_label}" if out_label else "Output"
+            if out_name:
+                label = f"{label} — {out_name}"
+            _set_cell_text(row.cells[0], label)
+            _set_cell_text(row.cells[1], "—")
+            _set_cell_text(row.cells[2], "—")
+            _set_cell_text(row.cells[3], assumptions_txt or "—")
             continue
 
-        first = len(tbl.rows)
-        for k in kpis:
-            r = tbl.add_row()
-            for i, w in enumerate(col_widths_main): r.cells[i].width = w
+        first_row_idx = len(tbl.rows)
+        for kpi in kpi_rows:
+            row = tbl.add_row()
+            for idx, width in enumerate(col_widths_main):
+                row.cells[idx].width = width
 
-            kcell = r.cells[1]; kcell.text = ""
-            p = kcell.paragraphs[0]
-            k_lab = kpi_nums.get(k["id"], "")
-            _add_run(p, f"KPI ({k_lab}) — {k.get('name','')}")
-            p.add_run("\n")
+            label = f"KPI {kpi_nums.get(kpi.get('id'), '')}".strip()
+            name = kpi.get("name", "")
+            k_cell = row.cells[1]
+            k_cell.text = ""
+            para = k_cell.paragraphs[0]
+            if label and name:
+                _add_run(para, f"{label} — {name}")
+            else:
+                _add_run(para, name or label)
+            para.add_run("\n")
 
-            bp = (k.get("baseline","") or "").strip()
-            if bp: _add_run(p, "Baseline: ", True); _add_run(p, bp); p.add_run("\n")
-            tg = (k.get("target","") or "").strip()
-            if tg: _add_run(p, "Target: ", True); _add_run(p, tg); p.add_run("\n")
-            _set_cell_text(r.cells[2], (k.get("mov") or "").strip() or "—")
+            baseline = (kpi.get("baseline") or "").strip()
+            if baseline:
+                _add_run(para, "Baseline: ", True)
+                _add_run(para, baseline)
+                para.add_run("\n")
+            target = (kpi.get("target") or "").strip()
+            if target:
+                _add_run(para, "Target: ", True)
+                _add_run(para, target)
+                para.add_run("\n")
 
-        last = len(tbl.rows) - 1
-        _set_cell_text(tbl.cell(first, 0), f"Output {out_num} — {out.get('name','')}")
-        _set_cell_text(tbl.cell(first, 3), out.get("assumptions","") or "—")
-        if last > first:
-            tbl.cell(first, 0).merge(tbl.cell(last, 0))
-            tbl.cell(first, 3).merge(tbl.cell(last, 3))
+            mov = (kpi.get("mov") or "").strip()
+            _set_cell_text(row.cells[2], mov or "—")
+            _set_cell_text(row.cells[3], _assumptions_doc_text(kpi.get("assumptions")) or "—")
 
-    # ==== WORKPLAN – Activities (table) ====
-    from docx.shared import Cm
-    _new_landscape_section("WORKPLAN")
+        last_row_idx = len(tbl.rows) - 1
+        if last_row_idx >= first_row_idx:
+            merged_label = tbl.cell(first_row_idx, 0).merge(tbl.cell(last_row_idx, 0))
+            label = f"Output {out_label}" if out_label else "Output"
+            if out_name:
+                label = f"{label} — {out_name}"
+            _set_cell_text(merged_label, label)
+            merged_assumption = tbl.cell(first_row_idx, 3).merge(tbl.cell(last_row_idx, 3))
+            _set_cell_text(merged_assumption, assumptions_txt or "—")
 
-    # Build tidy DF exactly as in the app
-    df_wp = _workplan_df()  # includes Activity/Output labels, Owner, Start, End
+    doc.add_paragraph("")
 
-    # Header: Output | Activity | Owner | Start | End
-    t_act = doc.add_table(rows=1, cols=5)
-    t_act.style = "Table Grid"
-    t_act.alignment = WD_TABLE_ALIGNMENT.LEFT
-
-    hdr = t_act.rows[0]
-    for i, lab in enumerate(("Output", "Activity", "Owner", "Start", "End")):
-        _set_cell_text(hdr.cells[i], lab, bold=True, white=True)
-        _shade(hdr.cells[i], PRIMARY_SHADE)
-    _repeat_header(hdr)
-
-    from docx.shared import Cm
-    # lock widths, similar proportions to logframe
-    COLW = (Cm(6.0), Cm(7.0), Cm(3.5), Cm(2.5), Cm(2.5))
-    for i, w in enumerate(COLW):
-        for r in t_act.rows:
-            r.cells[i].width = w
-        t_act.columns[i].width = w
-
-    # We want outputs numbered (1,2,...) in the same order as logframe
-    out_nums, _ = compute_numbers()
-    id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
-
-    # Map output name -> number (using id_to_output & out_nums)
-    # (df_wp has Output names already; we need to recover numbering by matching)
-    name_to_num = {}
-    for o in st.session_state.outputs:
-        num = out_nums.get(o["id"], "")
-        name = id_to_output.get(o["id"], "")
-        if name:
-            name_to_num[name] = num
-
-    # Group activities by Output (ordered by logframe numbering), render with merged output cells
+    workplan_section = _new_landscape_section("Workplan")
+    df_wp = _workplan_df()
     if df_wp.empty:
-        row = t_act.add_row()
-        _set_cell_text(row.cells[0], "—")
-        _set_cell_text(row.cells[1], "No scheduled activities")
-        _set_cell_text(row.cells[2], "—")
-        _set_cell_text(row.cells[3], "—")
-        _set_cell_text(row.cells[4], "—")
+        doc.add_paragraph("No activities defined yet.")
     else:
-        # 1) Stable within-group order: Start -> Activity
-        df_wp = df_wp.sort_values(["Start", "ActivityLabel"], kind="stable").reset_index(drop=True)
+        df_wp = df_wp.copy()
+        df_wp["Start"] = df_wp["Start"].dt.strftime("%d/%b/%Y")
+        df_wp["End"] = df_wp["End"].dt.strftime("%d/%b/%Y")
 
-        # 2) Deterministic group order: by Output number (from logframe)
-        def _out_order(name):
-            n = name_to_num.get(name, "")
-            try:
-                return int(n)
-            except Exception:
-                return 10 ** 9  # push unknowns to the end
+        col_widths_act = (Cm(5.5), Cm(6.4), Cm(4.6), Cm(3.0), Cm(3.0))
+        t_act = doc.add_table(rows=1, cols=5)
+        t_act.style = "Table Grid"
+        t_act.alignment = WD_TABLE_ALIGNMENT.LEFT
+        hdr = t_act.rows[0]
+        for idx, lab in enumerate(("Output", "Activity", "Owner", "Start date", "End date")):
+            _set_cell_text(hdr.cells[idx], lab, bold=True, white=True)
+            _shade(hdr.cells[idx], PRIMARY_SHADE)
+        _repeat_header(hdr)
+        for idx, width in enumerate(col_widths_act):
+            for row in t_act.rows:
+                row.cells[idx].width = width
+            t_act.columns[idx].width = width
 
-        ordered_outputs = sorted(df_wp["Output"].unique().tolist(), key=_out_order)
+        out_nums_map, _ = compute_numbers()
+        name_to_num = {}
+        for output in st.session_state.get("outputs", []):
+            name_to_num[output.get("name")] = out_nums_map.get(output.get("id"))
 
-        for out_name in ordered_outputs:
-            sub = df_wp.loc[df_wp["Output"] == out_name]
-
+        grouped = df_wp.groupby("Output")
+        for out_name, subset in grouped:
+            subset = subset.sort_values("ActivityLabel")
             start_row = len(t_act.rows)
-            for _, r in sub.iterrows():
+            for _, activity_row in subset.iterrows():
                 row = t_act.add_row()
-                # keep widths on the new row
-                for i, w in enumerate(COLW):
-                    row.cells[i].width = w
-                # fill activity row
-                _set_cell_text(row.cells[1], str(r["ActivityLabel"]))
-                owner_val = r.get("Owner", "")
+                for idx, width in enumerate(col_widths_act):
+                    row.cells[idx].width = width
+                _set_cell_text(row.cells[1], str(activity_row["ActivityLabel"]))
+                owner_val = activity_row.get("Owner", "")
                 if isinstance(owner_val, float):
                     try:
                         from math import isnan
@@ -993,9 +976,8 @@ def build_logframe_docx():
                 if not owner_text or owner_text.lower() == "nan":
                     owner_text = "—"
                 _set_cell_text(row.cells[2], owner_text)
-                _set_cell_text(row.cells[3], r["Start"].strftime("%d/%b/%Y"))
-                _set_cell_text(row.cells[4], r["End"].strftime("%d/%b/%Y"))
-
+                _set_cell_text(row.cells[3], activity_row["Start"] or "")
+                _set_cell_text(row.cells[4], activity_row["End"] or "")
             end_row = len(t_act.rows) - 1
             if end_row >= start_row:
                 merged = t_act.cell(start_row, 0).merge(t_act.cell(end_row, 0))
@@ -1008,160 +990,183 @@ def build_logframe_docx():
                     label = out_name or "Output"
                 _set_cell_text(merged, label)
 
-    doc.add_paragraph("")  # a small gap after the table
+    doc.add_paragraph("")
 
-    # ===== WORKPLAN – Gantt (LANDSCAPE section) =====
-    try:
-        gantt_buf = _gantt_png_buf()
-        if gantt_buf:
-            sec_land = _new_landscape_section("WORKPLAN")
-            from docx.shared import Cm
-            width_cm = _content_width_cm(sec_land)
-            doc.add_picture(gantt_buf, width=Cm(max(1.0, width_cm - 0.5)))  # 0.5 cm safety
-    except Exception:
-        pass
+    width_cm = _content_width_cm(workplan_section)
+    gantt_source = gantt_image_path or None
+    if gantt_source is None:
+        try:
+            gantt_source = _gantt_png_buf()
+        except Exception:
+            gantt_source = None
 
-    # ===== BUDGET =====
-    _new_landscape_section("BUDGET")
+    if gantt_source:
+        try:
+            heading_style = doc.styles['Heading 2']
+        except KeyError:
+            heading_style = doc.styles['Heading 1']
+        doc.add_paragraph("Workplan Gantt", style=heading_style)
+        try:
+            from pathlib import Path as _Path
+            pic_source = str(gantt_source) if isinstance(gantt_source, (str, _Path)) else gantt_source
+            doc.add_picture(pic_source, width=Cm(max(1.0, width_cm - 0.5)))
+        except Exception:
+            pass
 
-    # Detailed budget table: Activity | Line Item | Category | Sub-Category | Unit | Unit Cost (USD) | Quantity | Total (USD)
+    doc.add_paragraph("")
+
+    _new_landscape_section("Budget")
     bt = doc.add_table(rows=1, cols=8)
     bt.style = "Table Grid"
     bt.alignment = WD_TABLE_ALIGNMENT.LEFT
-
     bh = bt.rows[0]
-    headers = ("Activity", "Line Item", "Category", "Sub Category", "Unit",
-               "Unit Cost (USD)", "Quantity", "Total (USD)")
-    for i, lab in enumerate(headers):
-        _set_cell_text(bh.cells[i], lab, bold=True, white=True)
-        _shade(bh.cells[i], PRIMARY_SHADE)
+    headers = ("Activity", "Line Item", "Category", "Sub Category", "Unit", "Unit Cost (USD)", "Quantity", "Total (USD)")
+    for idx, lab in enumerate(headers):
+        _set_cell_text(bh.cells[idx], lab, bold=True, white=True)
+        _shade(bh.cells[idx], PRIMARY_SHADE)
     _repeat_header(bh)
 
-    from docx.shared import Cm
     colw = (Cm(5.2), Cm(5.5), Cm(3.8), Cm(4.2), Cm(2.8), Cm(3.2), Cm(2.8), Cm(3.4))
-    for i, w in enumerate(colw):
-        for r in bt.rows:
-            r.cells[i].width = w
-        bt.columns[i].width = w
+    for idx, width in enumerate(colw):
+        for row in bt.rows:
+            row.cells[idx].width = width
+        bt.columns[idx].width = width
 
-    # helpers for labels
     _, _, act_nums = compute_numbers(include_activities=True)
     act_lookup = activity_label_map(act_nums)
 
     total_budget = 0.0
-    for row in st.session_state.get("budget", []):
-        rid = bt.add_row()
-        act_label = act_lookup.get(row.get("activity_id"), "")
-        _set_cell_text(rid.cells[0], act_label)
-        _set_cell_text(rid.cells[1], row.get("item", ""))
-        _set_cell_text(rid.cells[2], row.get("category", ""))
-        _set_cell_text(rid.cells[3], row.get("subcategory", ""))
-        _set_cell_text(rid.cells[4], row.get("unit", ""))
+    for budget_row in st.session_state.get("budget", []):
+        row = bt.add_row()
+        for idx, width in enumerate(colw):
+            row.cells[idx].width = width
+        _set_cell_text(row.cells[0], act_lookup.get(budget_row.get("activity_id"), ""))
+        _set_cell_text(row.cells[1], budget_row.get("item", ""))
+        _set_cell_text(row.cells[2], budget_row.get("category", ""))
+        _set_cell_text(row.cells[3], budget_row.get("subcategory", ""))
+        _set_cell_text(row.cells[4], budget_row.get("unit", ""))
 
-        uc = float(row.get("unit_cost") or 0.0)
-        qty = float(row.get("qty") or 0.0)
-        tot = float(row.get("total_usd") or (uc * qty) or 0.0)
-        total_budget += tot
+        unit_cost = float(budget_row.get("unit_cost") or 0.0)
+        quantity = float(budget_row.get("qty") or 0.0)
+        total = float(budget_row.get("total_usd") or (unit_cost * quantity) or 0.0)
+        total_budget += total
 
-        _set_cell_text(rid.cells[5], f"{uc:,.2f}")
-        _set_cell_text(rid.cells[6], f"{qty:,.2f}")
-        _set_cell_text(rid.cells[7], f"{tot:,.2f}")
+        _set_cell_text(row.cells[5], f"{unit_cost:,.2f}")
+        _set_cell_text(row.cells[6], f"{quantity:,.2f}")
+        _set_cell_text(row.cells[7], f"{total:,.2f}")
 
-    # Total line
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    run = p.add_run(f"Total budget: USD {total_budget:,.2f}")
+    para = doc.add_paragraph()
+    para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    run = para.add_run(f"Total budget: USD {total_budget:,.2f}")
     run.bold = True
 
-    # USD→AED note
     note = doc.add_paragraph()
     note_run = note.add_run(footer_note)
     note_run.italic = True
 
-    # ===== DISBURSEMENT SCHEDULE =====
-    _ensure_portrait_section("DISBURSEMENT SCHEDULE")
-
+    _ensure_portrait_section("Disbursement Schedule")
     from datetime import date as _date
-    # Use saved disbursement rows (leave empty -> no rows)
-    dsp_src = list(st.session_state.get("disbursement", []))
 
-    # Sort consistently: by output label (for stability), then date, then deliverable text
-    out_nums, _ = compute_numbers()
+    dsp_src = list(st.session_state.get("disbursement", []))
+    out_nums_map, _ = compute_numbers()
     id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
 
-    def _out_label(oid):  # only for stable sort; NOT shown in table
-        return f"Output {out_nums.get(oid, '')} — {id_to_output.get(oid, '(unassigned)')}".strip(" —")
+    def _out_label(output_id):
+        return f"Output {out_nums_map.get(output_id, '')} — {id_to_output.get(output_id, '(unassigned)')}".strip(" —")
 
-    # Sort primarily by date (earliest first), then by Output number, then by KPI title
-    out_nums, _ = compute_numbers()
-
-    def _out_num_val(oid):
-        n = out_nums.get(oid, "")
+    def _out_num_val(output_id):
+        label = out_nums_map.get(output_id, "")
         try:
-            return int(n)
+            return int(label)
         except Exception:
-            return 10 ** 9  # push unknown/unnumbered outputs to the end
+            return 10 ** 9
 
     dsp_rows = sorted(
         dsp_src,
-        key=lambda d: (
-            d.get("anticipated_date") or _date(2100, 1, 1),  # 1) date
-            _out_num_val(d.get("output_id")),  # 2) output number (not shown)
-            (d.get("kpi_name") or d.get("deliverable") or "").strip()  # 3) KPI title
-        )
+        key=lambda row: (
+            row.get("anticipated_date") or _date(2100, 1, 1),
+            _out_num_val(row.get("output_id")),
+            (row.get("kpi_name") or row.get("deliverable") or "").strip(),
+        ),
     )
 
-    # Table: SAME style as other tables (no title row, no milestone id col)
-    t = doc.add_table(rows=1, cols=3)
-    t.style = "Table Grid"
-    t.alignment = WD_TABLE_ALIGNMENT.LEFT
-
-    # Header row (PRIMARY_SHADE + white)
-    hdr = t.rows[0]
-    headers = (
-        "Anticipated deliverable date",
-        "Deliverable",
-        "Maximum Grant instalment payable on satisfaction of this deliverable (USD)",
-    )
-    for i, lab in enumerate(headers):
-        _set_cell_text(hdr.cells[i], lab, bold=True, white=True)
-        _shade(hdr.cells[i], PRIMARY_SHADE)
+    t_disb = doc.add_table(rows=1, cols=5)
+    t_disb.style = "Table Grid"
+    t_disb.alignment = WD_TABLE_ALIGNMENT.LEFT
+    hdr = t_disb.rows[0]
+    for idx, lab in enumerate(("Output", "KPI", "Anticipated deliverable date", "Deliverable", "Amount (USD)")):
+        _set_cell_text(hdr.cells[idx], lab, bold=True, white=True)
+        _shade(hdr.cells[idx], PRIMARY_SHADE)
     _repeat_header(hdr)
 
-    # Column widths
-    for i, w in enumerate((Cm(5.0), Cm(12.0), Cm(5.0))):
-        for r in t.rows:
-            r.cells[i].width = w
-        t.columns[i].width = w
+    disb_widths = (Cm(3.5), Cm(4.0), Cm(3.5), Cm(7.0), Cm(3.0))
+    for idx, width in enumerate(disb_widths):
+        for row in t_disb.rows:
+            row.cells[idx].width = width
+        t_disb.columns[idx].width = width
 
-    # Data rows (Deliverable = KPI title only; do NOT prepend Output)
     if dsp_rows:
-        for d in dsp_rows:
-            r = t.add_row()
-            _set_cell_text(r.cells[0], d["anticipated_date"].strftime("%d/%b/%Y") if d.get("anticipated_date") else "")
-            _set_cell_text(r.cells[1], (d.get("deliverable") or d.get("kpi_name") or ""))
-            _set_cell_text(r.cells[2], f"{float(d.get('amount_usd') or 0.0):,.2f}")
+        for d_row in dsp_rows:
+            row = t_disb.add_row()
+            for idx, width in enumerate(disb_widths):
+                row.cells[idx].width = width
+            _set_cell_text(row.cells[0], _out_label(d_row.get("output_id")))
+            _set_cell_text(row.cells[1], d_row.get("kpi_name") or "")
+            _set_cell_text(row.cells[2], fmt_dd_mmm_yyyy(d_row.get("anticipated_date")) or "")
+            _set_cell_text(row.cells[3], d_row.get("deliverable") or "")
+            _set_cell_text(row.cells[4], f"{float(d_row.get('amount_usd') or 0.0):,.2f}")
     else:
-        r = t.add_row()
-        _set_cell_text(r.cells[0], "")
-        _set_cell_text(r.cells[1], "No disbursements defined.")
-        _set_cell_text(r.cells[2], "")
+        row = t_disb.add_row()
+        for idx, width in enumerate(disb_widths):
+            row.cells[idx].width = width
+        _set_cell_text(row.cells[0], "")
+        _set_cell_text(row.cells[1], "")
+        _set_cell_text(row.cells[2], "")
+        _set_cell_text(row.cells[3], "No disbursements defined.")
+        _set_cell_text(row.cells[4], "")
 
-    # USD→AED note under the budget table
+    assumption_rows = []
+    if goal_assumptions_text:
+        assumption_rows.append(("Goal", goal_assumptions_text))
+    for outcome in st.session_state.get("outcomes", []):
+        text_value = _assumptions_doc_text(outcome.get("assumptions"))
+        if text_value:
+            assumption_rows.append((f"Outcome — {outcome.get('name','')}", text_value))
+    for output in st.session_state.get("outputs", []):
+        text_value = _assumptions_doc_text(output.get("assumptions"))
+        if text_value:
+            label = f"Output {out_nums.get(output.get('id'), '')} — {output.get('name','')}".strip(" —")
+            assumption_rows.append((label or "Output", text_value))
+
+    if assumption_rows:
+        doc.add_paragraph("")
+        try:
+            heading_style = doc.styles['Heading 2']
+        except KeyError:
+            heading_style = doc.styles['Heading 1']
+        doc.add_paragraph("Assumptions", style=heading_style)
+        tbl_ass = doc.add_table(rows=len(assumption_rows), cols=2)
+        tbl_ass.style = "Table Grid"
+        tbl_ass.alignment = WD_TABLE_ALIGNMENT.LEFT
+        for idx, width in enumerate((Cm(5.0), Cm(11.0))):
+            for row in tbl_ass.rows:
+                row.cells[idx].width = width
+            tbl_ass.columns[idx].width = width
+        for row_idx, (label, text_value) in enumerate(assumption_rows):
+            _set_cell_text(tbl_ass.cell(row_idx, 0), label, bold=True)
+            _set_cell_text(tbl_ass.cell(row_idx, 1), text_value)
+
     note = doc.add_paragraph()
-    note_run = note.add_run(
-        footer_note
-    )
+    note_run = note.add_run(footer_note)
     note_run.italic = True
 
-    # Enforce Calibri globally:
     _force_calibri_everywhere(doc)
 
-    # ---- Save to buffer
-    buf = BytesIO()
-    doc.save(buf)
-    buf.seek(0)
-    return buf
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
+
 
 def view_activity_readonly(a, label, id_to_output, id_to_kpi):
     out_name = id_to_output.get(a.get("output_id"), "(unassigned)")
@@ -1972,12 +1977,14 @@ if uploaded_file is not None:
                     "title": _g("Project title"),
                     "pi_name": _g("Principal Investigator (PI) name"),
                     "pi_email": _g("PI email"),
-                    "institution": _g("Institution / Organization"),
+                    "implementing_partners": _g("Implementing Partner(s)") or _g("Implementing Partner(s) (If applicable)"),
+                    "supporting_partners": _g("Supporting Partners"),
                     "start_date": parse_date_like(kv.get("Project start date", "")) or id_info.get("start_date"),
                     "end_date": parse_date_like(kv.get("Project end date", "")) or id_info.get("end_date"),
-                    "contact_name": _g("Contact person (optional)"),
-                    "contact_email": _g("Contact email"),
-                    "contact_phone": _g("Contact phone"),
+                    "location": _g("Implementation location"),
+                    "contact_name": _g("Main Contact person (Optional)"),
+                    "contact_email": _g("Main Contact email (Optional)"),
+                    "contact_phone": _g("Contact phone (Optional)"),
                 })
                 st.session_state.id_info = id_info
 
@@ -1985,9 +1992,11 @@ if uploaded_file is not None:
                 st.session_state["id_title"] = id_info["title"]
                 st.session_state["id_pi_name"] = id_info["pi_name"]
                 st.session_state["id_pi_email"] = id_info["pi_email"]
-                st.session_state["id_institution"] = id_info["institution"]
+                st.session_state["id_implementing_partners"] = id_info["implementing_partners"]
+                st.session_state["id_supporting_partners"] = id_info["supporting_partners"]
                 st.session_state["id_start_date"] = id_info["start_date"]
                 st.session_state["id_end_date"] = id_info["end_date"]
+                st.session_state["id_location"] = id_info["location"]
                 st.session_state["id_contact_name"] = id_info["contact_name"]
                 st.session_state["id_contact_email"] = id_info["contact_email"]
                 st.session_state["id_contact_phone"] = id_info["contact_phone"]
@@ -2008,9 +2017,17 @@ with tabs[1]:
     # defaults
     if "id_info" not in st.session_state:
         st.session_state.id_info = {
-            "title": "", "pi_name": "", "pi_email": "", "institution": "",
-            "start_date": None, "end_date": None,
-            "contact_name": "", "contact_email": "", "contact_phone": ""
+            "title": "",
+            "pi_name": "",
+            "pi_email": "",
+            "implementing_partners": "",
+            "supporting_partners": "",
+            "start_date": None,
+            "end_date": None,
+            "location": "",
+            "contact_name": "",
+            "contact_email": "",
+            "contact_phone": "",
         }
 
     # ensure widget keys exist (so inputs are persistent & can be set by the importer)
@@ -2018,46 +2035,60 @@ with tabs[1]:
         ("id_title", st.session_state.id_info["title"]),
         ("id_pi_name", st.session_state.id_info["pi_name"]),
         ("id_pi_email", st.session_state.id_info["pi_email"]),
-        ("id_institution", st.session_state.id_info["institution"]),
+        ("id_implementing_partners", st.session_state.id_info["implementing_partners"]),
+        ("id_supporting_partners", st.session_state.id_info["supporting_partners"]),
         ("id_start_date", st.session_state.id_info["start_date"]),
         ("id_end_date", st.session_state.id_info["end_date"]),
+        ("id_location", st.session_state.id_info["location"]),
         ("id_contact_name", st.session_state.id_info["contact_name"]),
         ("id_contact_email", st.session_state.id_info["contact_email"]),
         ("id_contact_phone", st.session_state.id_info["contact_phone"]),
     ]:
         if k not in st.session_state:
             st.session_state[k] = v
+    st.session_state.id_info["title"] = st.text_input("Project title", key="id_title")
+    st.session_state.id_info["pi_name"] = st.text_input("Principal Investigator (PI) name", key="id_pi_name")
+    st.session_state.id_info["pi_email"] = st.text_input("PI email", key="id_pi_email")
+    st.session_state.id_info["implementing_partners"] = st.text_input("Implementing Partner(s)", key="id_implementing_partners")
+    st.session_state.id_info["supporting_partners"] = st.text_input("Supporting Partners", key="id_supporting_partners")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.session_state.id_info["title"] = st.text_input("Project title*", key="id_title")
-        st.session_state.id_info["pi_name"] = st.text_input("Principal Investigator (PI) name*", key="id_pi_name")
-        st.session_state.id_info["pi_email"] = st.text_input("PI email*", key="id_pi_email")
-        st.session_state.id_info["institution"] = st.text_input("Institution / Organization*", key="id_institution")
-    with c2:
-        sd = st.date_input("Project start date*", key="id_start_date")
-        if sd:
-            st.caption(f"Selected: {fmt_dd_mmm_yyyy(sd)}")  # show DD/Mon/YYYY preview
+    sd_init = st.session_state.id_info.get("start_date")
+    sd = st.date_input(
+        "Project start date",
+        value=sd_init if sd_init else None,
+        format="DD/MMM/YYYY",
+        key="id_start_date",
+    )
 
-        ed = st.date_input("Project end date*", key="id_end_date")
-        if ed:
-            st.caption(f"Selected: {fmt_dd_mmm_yyyy(ed)}")  # show DD/Mon/YYYY preview
+    ed_init = st.session_state.id_info.get("end_date")
+    ed = st.date_input(
+        "Project end date",
+        value=ed_init if ed_init else None,
+        format="DD/MMM/YYYY",
+        key="id_end_date",
+    )
 
-        # keep canonical values in id_info for export/validation
-        st.session_state.id_info["start_date"] = sd
-        st.session_state.id_info["end_date"] = ed
-        with st.expander("More contact details (optional)"):
-            st.session_state.id_info["contact_name"] = st.text_input("Contact person (if different from PI)", key="id_contact_name")
-            st.session_state.id_info["contact_email"] = st.text_input("Contact email", key="id_contact_email")
-            st.session_state.id_info["contact_phone"] = st.text_input("Contact phone", key="id_contact_phone")
+    st.session_state.id_info["start_date"] = sd
+    st.session_state.id_info["end_date"] = ed
+
+    st.session_state.id_info["location"] = st.text_input("Implementation location", key="id_location")
+    st.session_state.id_info["contact_name"] = st.text_input("Main Contact person (Optional)", key="id_contact_name")
+    st.session_state.id_info["contact_email"] = st.text_input("Main Contact email (Optional)", key="id_contact_email")
+    st.session_state.id_info["contact_phone"] = st.text_input("Contact phone (Optional)", key="id_contact_phone")
 
     # inline validation (no button)
     errs = []
     ii = st.session_state.id_info
-    if not ii["title"].strip():       errs.append("Project title is required.")
-    if not ii["pi_name"].strip():     errs.append("PI name is required.")
-    if not ii["institution"].strip(): errs.append("Institution is required.")
-    if not ii["pi_email"].strip() or "@" not in ii["pi_email"]: errs.append("Valid PI email is required.")
+    if not ii["title"].strip():
+        errs.append("Project title is required.")
+    if not ii["pi_name"].strip():
+        errs.append("PI name is required.")
+    if not ii["location"].strip():
+        errs.append("Implementation location is required.")
+    if not ii["pi_email"].strip() or "@" not in ii["pi_email"] or "." not in ii["pi_email"]:
+        errs.append("Valid PI email is required.")
+    if ii["contact_email"].strip() and ("@" not in ii["contact_email"] or "." not in ii["contact_email"]):
+        errs.append("Main Contact email must be valid if provided.")
     if ii["start_date"] and ii["end_date"] and ii["start_date"] > ii["end_date"]:
         errs.append("Project start date must be on or before the end date.")
 
@@ -2066,12 +2097,45 @@ with tabs[1]:
         st.session_state["id_title"].strip(),
         st.session_state["id_pi_name"].strip(),
         st.session_state["id_pi_email"].strip(),
-        st.session_state["id_institution"].strip(),
+        st.session_state["id_supporting_partners"].strip(),
+        st.session_state["id_location"].strip(),
     ])
     if touched:
         for e in errs:
             st.error(e)
 
+
+    # ---------- Read-only computed fields ----------
+
+    budget_total = sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
+    outputs_count = len(st.session_state.get("outputs", []))
+    kpis_count = len(st.session_state.get("kpis", []))
+    activities_count = len(st.session_state.get("workplan", []))
+
+    st.text_input(
+        "Total Funding requested (From Budget)",
+        value=f"USD {budget_total:,.2f}",
+        key="_ro_total_funding",
+        disabled=True,
+    )
+    st.text_input(
+        "# Outputs (read-only; count from Logframe)",
+        value=str(outputs_count),
+        key="_ro_outputs_count",
+        disabled=True,
+    )
+    st.text_input(
+        "# KPIs (read-only; count from Logframe)",
+        value=str(kpis_count),
+        key="_ro_kpis_count",
+        disabled=True,
+    )
+    st.text_input(
+        "# Activities (read-only; count from Workplan)",
+        value=str(activities_count),
+        key="_ro_activities_count",
+        disabled=True,
+    )
 
     # ---------- Summary cards (dashboard-style) ----------
 
@@ -2079,12 +2143,6 @@ with tabs[1]:
         if val >= 1000:
             return f"USD {val / 1000:,.0f}k"
         return f"USD {val:,.0f}"
-
-    # numbers you already compute above
-    budget_total = sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
-    outputs_count = len(st.session_state.get("outputs", []))
-    kpis_count = len(st.session_state.get("kpis", []))
-    activities_count = len(st.session_state.get("workplan", []))
 
     # (optional) project duration in months as an extra metric
     start = st.session_state.get("id_info", {}).get("start_date")
@@ -2150,25 +2208,25 @@ with tabs[1]:
 
       <div class="card">
         <div class="badge badge-blue">💵</div>
-        <h4>Total Planned Budget</h4>
+        <h4>Total Funding requested</h4>
         <div class="value">{format_k_usd(budget_total)}</div>
       </div>
 
       <div class="card">
         <div class="badge badge-indigo">📦</div>
-        <h4>Outputs</h4>
+        <h4># Outputs</h4>
         <div class="value">{outputs_count:,}</div>
       </div>
 
       <div class="card">
         <div class="badge badge-green">🗂️</div>
-        <h4>Workplan Activities</h4>
+        <h4># Activities</h4>
         <div class="value">{activities_count:,}</div>
       </div>
 
       <div class="card">
         <div class="badge badge-slate">🎯</div>
-        <h4>KPIs</h4>
+        <h4># KPIs</h4>
         <div class="value">{kpis_count:,}</div>
       </div>
 
@@ -2835,7 +2893,10 @@ with tabs[4]:
             # initialize controlled values
             st.session_state.setdefault(f"e_item_{rid}", rec.get("item",""))
             st.session_state.setdefault(f"e_act_lbl_{rid}", _activity_label(rec.get("activity_id")))
-            st.session_state.setdefault(f"e_cat_{rid}", rec.get("category") or list(CATEGORY_TREE.keys())[0])
+            default_cat = rec.get("category") if rec.get("category") in CATEGORY_TREE else None
+            if default_cat is None:
+                default_cat = next(iter(CATEGORY_TREE))
+            st.session_state.setdefault(f"e_cat_{rid}", default_cat)
             # ensure current sub is in list
             cur_subs = subcategories_for(st.session_state[f"e_cat_{rid}"]) or ["(none)"]
             if rec.get("subcategory") not in cur_subs:
@@ -2869,10 +2930,17 @@ with tabs[4]:
 
             # 3) Category | Sub-Category (dependent)
             ec, es = st.columns(2)
+            cat_options = list(CATEGORY_TREE.keys())
+            current_cat = st.session_state.get(f"e_cat_{rid}")
+            if current_cat not in CATEGORY_TREE:
+                current_cat = cat_options[0]
+                st.session_state[f"e_cat_{rid}"] = current_cat
             st.session_state[f"e_cat_{rid}"] = ec.selectbox(
-                "Cost Category*", list(CATEGORY_TREE.keys()),
-                index=list(CATEGORY_TREE.keys()).index(st.session_state[f"e_cat_{rid}"]),
-                on_change=_on_edit_cat_change, key=f"e_cat_key_{rid}"
+                "Cost Category*",
+                cat_options,
+                index=cat_options.index(current_cat) if cat_options else 0,
+                on_change=_on_edit_cat_change,
+                key=f"e_cat_key_{rid}"
             )
             sub_opts_e = subcategories_for(st.session_state[f"e_cat_{rid}"]) or ["(none)"]
             st.session_state[f"e_sub_{rid}"] = es.selectbox(
@@ -3005,9 +3073,11 @@ if tabs[6].button("Generate Backup File (Excel)"):
     proj_title = id_info.get("title", "")
     pi_name = id_info.get("pi_name", "")
     pi_email = id_info.get("pi_email", "")
-    institution = id_info.get("institution", "")
+    implementing_partners = id_info.get("implementing_partners", "")
+    supporting_partners = id_info.get("supporting_partners", "")
     start_date = id_info.get("start_date", "")
     end_date = id_info.get("end_date", "")
+    location = id_info.get("location", "")
     contact_name = id_info.get("contact_name", "")
     contact_mail = id_info.get("contact_email", "")
     contact_phone = id_info.get("contact_phone", "")
@@ -3016,23 +3086,27 @@ if tabs[6].button("Generate Backup File (Excel)"):
     budget_total = _sum_budget_for_export()
     outputs_count = len(st.session_state.get("outputs", []))
     kpis_count = len(st.session_state.get("kpis", []))
+    activities_count = len(st.session_state.get("workplan", []))
 
     ws_id = wb.create_sheet("Project Overview", 0)  # put it first
     ws_id.append(["Field", "Value"])
     ws_id.append(["Project title", proj_title])
     ws_id.append(["Principal Investigator (PI) name", pi_name])
     ws_id.append(["PI email", pi_email])
-    ws_id.append(["Institution / Organization", institution])
+    ws_id.append(["Implementing Partner(s)", implementing_partners])
+    ws_id.append(["Supporting Partners", supporting_partners])
     ws_id.append(["Project start date", fmt_dd_mmm_yyyy(start_date)])
     ws_id.append(["Project end date", fmt_dd_mmm_yyyy(end_date)])
-    ws_id.append(["Contact person (optional)", contact_name])
-    ws_id.append(["Contact email", contact_mail])
-    ws_id.append(["Contact phone", contact_phone])
+    ws_id.append(["Implementation location", location])
+    ws_id.append(["Main Contact person (Optional)", contact_name])
+    ws_id.append(["Main Contact email (Optional)", contact_mail])
+    ws_id.append(["Contact phone (Optional)", contact_phone])
 
     # read-only summary values
-    ws_id.append(["Funding requested (from Budget)", f"{budget_total:,.2f}"])
-    ws_id.append(["Outputs (count)", outputs_count])
-    ws_id.append(["KPIs (count)", kpis_count])
+    ws_id.append(["Total Funding requested (From Budget)", f"USD {budget_total:,.2f}"])
+    ws_id.append(["# Outputs", outputs_count])
+    ws_id.append(["# KPIs", kpis_count])
+    ws_id.append(["# Activities", activities_count])
 
     # Sheet 1: Summary (Goal/Outcome/Output) — with explicit IDs
     s1 = wb.create_sheet("Summary", 1)
@@ -3210,13 +3284,13 @@ if tabs[6].button("Generate Backup File (Excel)"):
 # --- Word export (Logframe as table)
 if tabs[6].button("Generate Project Design Document (Word)"):
     try:
-        word_buf = build_logframe_docx()
+        word_buf = render_pdd()
         proj_title = (st.session_state.get("id_info", {}) or {}).get("title", "") or "Project"
         safe = re.sub(r"[^A-Za-z0-9]+", "_", proj_title).strip("_") or "Project"
         tabs[6].download_button(
             "📥 Download Project Design Document (Word)",
             data=word_buf,
-            file_name=f"Logframe_{safe}.docx",
+            file_name=f"PDD_{safe}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
     except ModuleNotFoundError:
