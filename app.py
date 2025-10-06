@@ -1509,7 +1509,7 @@ SUBCATEGORY_UNIT_SUGGESTIONS = {
     "Audio/Visual & Interpretation (on-site)": ["per day", "per event"],
     "Training / Workshop Materials":           ["per participant", "per event"],
     "Catering & Refreshments":                 ["per participant", "per event day", "per event"],
-    "Event Packages (e.g. entertainment, gifts, souvernirs, awards, etc.)": ["per event"], ["per person"],
+    "Event Packages (e.g. entertainment, gifts, souvernirs, awards, etc.)": ["per event", "per person"],
     "Per Diem / Allowances":                   ["per participant per day"],
 
     # Travel & Transportation
