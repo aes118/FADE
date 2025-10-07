@@ -2052,48 +2052,58 @@ Please complete each section of your project:
 
                 # --- Import Project Detail (free text + roles table) ---
                 if "Project Detail" in xls.sheet_names:
-                    pdf = pd.read_excel(xls, sheet_name="Project Detail", header=None).fillna("")
-
                     pd_state = {key: "" for key in PROJECT_DETAIL_MAP.values()}
+
+                    pdf = pd.read_excel(xls, sheet_name="Project Detail", dtype=str).fillna("")
+                    pdf.columns = [str(c).strip() for c in pdf.columns]
+                    if {"Field", "Value"}.issubset(set(pdf.columns)):
+                        fields_df = pdf[["Field", "Value"]].copy()
+                    else:
+                        tmp = pd.read_excel(xls, sheet_name="Project Detail", header=0, dtype=str).fillna("")
+                        tmp.columns = [str(c).strip() for c in tmp.columns]
+                        if {"Field", "Value"}.issubset(set(tmp.columns)):
+                            fields_df = tmp[["Field", "Value"]].copy()
+                        else:
+                            tmp = tmp.copy()
+                            if tmp.shape[1] < 2:
+                                for pad in range(2 - tmp.shape[1]):
+                                    tmp[f"__pad_{pad}"] = ""
+                            fields_df = tmp.iloc[:, :2].copy()
+                            fields_df.columns = ["Field", "Value"]
+
+                    fields_df = fields_df.assign(
+                        __field_norm=fields_df["Field"].apply(_normalize_project_detail_label)
+                    )
+
+                    for label, key in PROJECT_DETAIL_MAP.items():
+                        norm = _normalize_project_detail_label(label)
+                        match = fields_df.loc[fields_df["__field_norm"] == norm, "Value"]
+                        cell = match.iloc[0] if not match.empty else ""
+                        pd_state[key] = str(cell or "")
+
+                    raw_df = pd.read_excel(xls, sheet_name="Project Detail", header=None, dtype=str).fillna("")
                     roles_header_idx = None
-
-                    # Read top “Field | Value” pairs until we hit the Roles section
-                    for i in range(len(pdf)):
-                        raw_label = pdf.iat[i, 0]
-                        c1 = pdf.iat[i, 1] if pdf.shape[1] > 1 else ""
-                        c2 = pdf.iat[i, 2] if pdf.shape[1] > 2 else ""
-
-                        label_norm = _normalize_project_detail_label(raw_label)
-                        if not label_norm and not str(c1 or "").strip():
-                            continue
-                        key = _PROJECT_DETAIL_NORMALIZED.get(label_norm, (None, None))[1]
-                        if key:
-                            pd_state[key] = "" if c1 is None else str(c1)
-                        if (
-                            roles_header_idx is None
-                            and str(raw_label or "").strip() == "Entity"
-                            and str(c1 or "").strip() == "Description"
-                            and str(c2 or "").strip() == "Role & responsibility"
-                        ):
+                    for i in range(len(raw_df)):
+                        r0 = str(raw_df.iat[i, 0]).strip()
+                        r1 = str(raw_df.iat[i, 1]).strip() if raw_df.shape[1] > 1 else ""
+                        r2 = str(raw_df.iat[i, 2]).strip() if raw_df.shape[1] > 2 else ""
+                        if r0 == "Entity" and r1 == "Description" and r2 == "Role & responsibility":
                             roles_header_idx = i
+                            break
 
-                    # Convert the Roles table to the DataFrame shape the UI expects
                     import pandas as _pd
                     roles_df = _pd.DataFrame(columns=["Entity", "Description", "Role & responsibility"])
                     if roles_header_idx is not None:
-                        table_start = roles_header_idx + 1
-                        for r in range(table_start, len(pdf)):
-                            ent = str(pdf.iat[r, 0]).strip() if pdf.shape[1] > 0 else ""
-                            desc = str(pdf.iat[r, 1]).strip() if pdf.shape[1] > 1 else ""
-                            role = str(pdf.iat[r, 2]).strip() if pdf.shape[1] > 2 else ""
+                        for r in range(roles_header_idx + 1, len(raw_df)):
+                            ent = str(raw_df.iat[r, 0]).strip() if raw_df.shape[1] > 0 else ""
+                            desc = str(raw_df.iat[r, 1]).strip() if raw_df.shape[1] > 1 else ""
+                            role = str(raw_df.iat[r, 2]).strip() if raw_df.shape[1] > 2 else ""
                             if ent == "" and desc == "" and role == "":
                                 break
                             roles_df.loc[len(roles_df)] = [ent, desc, role]
 
                     pd_state["roles_table"] = roles_df
-
-                    st.session_state.setdefault("project_detail", {})
-                    st.session_state.project_detail.update(pd_state)
+                    st.session_state["project_detail"] = pd_state
 
                 # ---- KPI Matrix (ID-based) ----
                 if "KPI Matrix" in xls.sheet_names:
