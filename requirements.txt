@@ -1,7 +1,9 @@
-streamlit>=1.32
-pandas
-openpyxl
+streamlit>=1.33
+pandas>=2.0
+openpyxl>=3.1
+python-docx>=1.1
 Pillow
-python-docx>=0.8.11
-matplotlib
-streamlit-quill html2docx
+matplotlib>=3.8
+requests>=2.31
+streamlit-quill
+html2docx>=1.6
