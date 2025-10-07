@@ -341,16 +341,11 @@ def _draw_gantt(ax, df, *, show_today=False):
         edgecolor="white", linewidth=0.8, alpha=0.95
     )
 
-    # Optional: label durations at the end of each bar (uncomment to enable)
-    # for yi, s, w in zip(y, lefts, widths):
-    #     ax.text(s + timedelta(days=w) , yi, f" {int(w)}d",
-    #             va="center", ha="left", fontsize=8, color="#444")
-
     # ---- Y axis: activities
     ax.set_yticks(y)
     ax.set_yticklabels(df["ActivityLabel"], fontsize=9)
     ax.invert_yaxis()
-    ax.set_ylabel("Activity")
+    ax.set_ylabel("Activities")
 
     # ---- X axis: quarterly major ticks + monthly minors; labels MMM-YYYY
     ax.xaxis.set_major_locator(mdates.MonthLocator(bymonth=(1,4,7,10)))  # Jan/Apr/Jul/Oct
@@ -384,23 +379,37 @@ def _draw_gantt(ax, df, *, show_today=False):
         ax.text(today, ax.get_ylim()[0] - 0.25, "Today", rotation=90,
                 va="top", ha="center", fontsize=8, color="#666")
 
-    # ---- Legend (bottom center), tidy spacing
+    # ---- Legend (adaptive layout & centered nicely) ----
     handles = [
         Patch(facecolor=color_map[o], label=output_labels.get(o, o))
         for o in ordered_outputs
     ]
+
+    # Auto-adjust number of columns for readability
+    num_items = len(handles)
+    if num_items <= 5:
+        ncol = 1  # single column (few outputs)
+    elif num_items <= 10:
+        ncol = 2  # medium
+    else:
+        ncol = 3  # many outputs → 3 columns
+
+    # Compute a slightly lower anchor for multi-column legends
+    y_offset = -0.25 - (0.07 * (ncol - 1))
+
     ax.legend(
         handles=handles,
         title="Outputs",
         loc="upper center",
-        bbox_to_anchor=(0.2, -0.30),
-        ncol=2,  # wrap if many outputs
-        # ncol=min(len(handles), 4),  # wrap if many outputs
+        bbox_to_anchor=(0.5, y_offset),  # centered horizontally
+        ncol=ncol,
         frameon=False,
         handlelength=1.8,
-        columnspacing=1.4,
+        columnspacing=1.2,
         handletextpad=0.6,
         borderaxespad=0.0,
+        fontsize=8,
+        title_fontsize=9,
     )
 
 def select_output_id(label, current_id, key):
@@ -868,6 +877,29 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         if orientation == WD_ORIENT.PORTRAIT and section.page_width > section.page_height:
             section.page_width, section.page_height = section.page_height, section.page_width
 
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Cm
+
+    def _align_header_logo_right(section):
+        """
+        For the given section:
+        - Unlink header from previous so it can differ in landscape.
+        - Right-align all header paragraphs and text in header tables.
+        """
+        hdr = section.header
+        hdr.is_linked_to_previous = False
+
+        # Plain paragraphs in the header
+        for p in hdr.paragraphs:
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+        # If the template header uses a table, align text in all cells to the right
+        for tbl in hdr.tables:
+            for row in tbl.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
     # set first section portrait
     first_section = doc.sections[0]
     _set_orientation(first_section, WD_ORIENT.PORTRAIT)
@@ -954,6 +986,7 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     def _new_landscape_section(title):
         section = doc.add_section(WD_SECTION_START.NEW_PAGE)
         _set_orientation(section, WD_ORIENT.LANDSCAPE)
+        _align_header_logo_right(section)
         _h1(title)
         return section
 
@@ -1202,62 +1235,52 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     doc.add_paragraph("")
 
     # ===== Workplan =====
-    workplan_section = _new_landscape_section("Workplan")
     df_wp = _workplan_df()
     if df_wp.empty:
         doc.add_paragraph("No activities defined yet.")
     else:
         df_wp = df_wp.copy()
         df_wp["Start"] = pd.to_datetime(df_wp["Start"], errors="coerce").dt.strftime("%d/%b/%Y")
-        df_wp["End"]   = pd.to_datetime(df_wp["End"], errors="coerce").dt.strftime("%d/%b/%Y")
+        df_wp["End"] = pd.to_datetime(df_wp["End"], errors="coerce").dt.strftime("%d/%b/%Y")
         df_wp["Start"] = df_wp["Start"].fillna("")
-        df_wp["End"]   = df_wp["End"].fillna("")
-        col_widths_act = (Cm(5.5), Cm(6.4), Cm(4.6), Cm(3.0), Cm(3.0))
-        t_act = doc.add_table(rows=1, cols=5)
+        df_wp["End"] = df_wp["End"].fillna("")
+
+        # Sort by start date then Activity label (no grouping)
+        df_wp = df_wp.sort_values(["ActivityLabel", "Start"], kind="stable")
+
+        # 4 columns: Activity | Owner | Start date | End date
+        col_widths_act = (Cm(14.0), Cm(5.0), Cm(3), Cm(3))
+        t_act = doc.add_table(rows=1, cols=4)
         t_act.style = "Table Grid"
         t_act.alignment = WD_TABLE_ALIGNMENT.LEFT
+
         hdr = t_act.rows[0]
-        for idx, lab in enumerate(("Output", "Activity", "Owner", "Start date", "End date")):
+        for idx, lab in enumerate(("Activity", "Owner", "Start date", "End date")):
             _set_cell_text(hdr.cells[idx], lab, bold=True, white=True)
             _shade(hdr.cells[idx], PRIMARY_SHADE)
         _repeat_header(hdr)
+
         for idx, width in enumerate(col_widths_act):
             for row in t_act.rows:
                 row.cells[idx].width = width
             t_act.columns[idx].width = width
 
-        out_nums_map, _ = compute_numbers()
-        name_to_num = {o.get("name"): out_nums_map.get(o.get("id")) for o in st.session_state.get("outputs", [])}
-
-        grouped = df_wp.groupby("Output")
-        for out_name, subset in grouped:
-            subset = subset.sort_values("ActivityLabel")
-            start_row = len(t_act.rows)
-            for _, activity_row in subset.iterrows():
-                row = t_act.add_row()
-                for idx, width in enumerate(col_widths_act):
-                    row.cells[idx].width = width
-                _set_cell_text(row.cells[1], str(activity_row["ActivityLabel"]))
-                owner_val = str(activity_row.get("Owner", "") or "").strip()
-                owner_val = "—" if not owner_val or owner_val.lower() == "nan" else owner_val
-                _set_cell_text(row.cells[2], owner_val)
-                _set_cell_text(row.cells[3], activity_row["Start"] or "")
-                _set_cell_text(row.cells[4], activity_row["End"] or "")
-            end_row = len(t_act.rows) - 1
-            if end_row >= start_row:
-                merged = t_act.cell(start_row, 0).merge(t_act.cell(end_row, 0))
-                num = name_to_num.get(out_name, "")
-                if num and out_name:
-                    label = f"Output {num} — {out_name}"
-                elif num:
-                    label = f"Output {num}"
-                else:
-                    label = out_name or "Output"
-                _set_cell_text(merged, label)
+        for _, r in df_wp.iterrows():
+            row = t_act.add_row()
+            for idx, width in enumerate(col_widths_act):
+                row.cells[idx].width = width
+            _set_cell_text(row.cells[0], str(r["ActivityLabel"]))
+            owner_val = str(r.get("Owner", "") or "").strip()
+            owner_val = "—" if not owner_val or owner_val.lower() == "nan" else owner_val
+            _set_cell_text(row.cells[1], owner_val)
+            _set_cell_text(row.cells[2], r["Start"] or "")
+            _set_cell_text(row.cells[3], r["End"] or "")
 
     doc.add_paragraph("")
 
-    width_cm = _content_width_cm(workplan_section)
+    gantt_section = _new_landscape_section("Workplan")
+
+    width_cm = _content_width_cm(logframe_section)
     gantt_source = gantt_image_path or None
     if gantt_source is None:
         try:
@@ -1265,11 +1288,6 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         except Exception:
             gantt_source = None
     if gantt_source:
-        try:
-            heading_style = doc.styles['Heading 2']
-        except KeyError:
-            heading_style = doc.styles['Heading 1']
-        doc.add_paragraph("Workplan Gantt", style=heading_style)
         try:
             from pathlib import Path as _Path
             pic_source = str(gantt_source) if isinstance(gantt_source, (str, _Path)) else gantt_source
@@ -1380,42 +1398,6 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         _set_cell_text(row.cells[2], "")
         _set_cell_text(row.cells[3], "No disbursements defined.")
         _set_cell_text(row.cells[4], "")
-
-    # # Assumptions summary
-    # assumption_rows = []
-    # if goal_assumptions_text:
-    #     assumption_rows.append(("Goal", goal_assumptions_text))
-    # for outcome in st.session_state.get("outcomes", []):
-    #     text_value = _assumptions_doc_text(outcome.get("assumptions"))
-    #     if text_value:
-    #         assumption_rows.append((f"Outcome — {outcome.get('name','')}", text_value))
-    # for output in st.session_state.get("outputs", []):
-    #     text_value = _assumptions_doc_text(output.get("assumptions"))
-    #     if text_value:
-    #         label = f"Output {out_nums.get(output.get('id'), '')} — {output.get('name','')}".strip(" —")
-    #         assumption_rows.append((label or "Output", text_value))
-    #
-    # if assumption_rows:
-    #     doc.add_paragraph("")
-    #     try:
-    #         heading_style = doc.styles['Heading 2']
-    #     except KeyError:
-    #         heading_style = doc.styles['Heading 1']
-    #     doc.add_paragraph("Assumptions", style=heading_style)
-    #     tbl_ass = doc.add_table(rows=len(assumption_rows), cols=2)
-    #     tbl_ass.style = "Table Grid"
-    #     tbl_ass.alignment = WD_TABLE_ALIGNMENT.LEFT
-    #     for idx, width in enumerate((Cm(5.0), Cm(11.0))):
-    #         for row in tbl_ass.rows:
-    #             row.cells[idx].width = width
-    #         tbl_ass.columns[idx].width = width
-    #     for row_idx, (label, text_value) in enumerate(assumption_rows):
-    #         _set_cell_text(tbl_ass.cell(row_idx, 0), label, bold=True)
-    #         _set_cell_text(tbl_ass.cell(row_idx, 1), text_value)
-    #
-    # note = doc.add_paragraph()
-    # note_run = note.add_run("Note: All monetary values are in USD and will be converted to AED in the official project agreement.")
-    # note_run.italic = True
 
     # normalize fonts (make sure your helper doesn't reset run sizes)
     _force_calibri_everywhere(doc)
