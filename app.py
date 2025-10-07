@@ -2053,28 +2053,32 @@ Please complete each section of your project:
                         "Communications & Publicity": "comms_publicity",
                     }
 
-                    pd_state = {}
-                    roles_start_idx = None
+                    pd_state = {k: "" for k in PD_LABELS_INV.values()}
+                    roles_header_idx = None
 
                     # Read top “Field | Value” pairs until we hit the Roles section
                     for i in range(len(pdf)):
                         c0 = str(pdf.iat[i, 0]).strip()
                         c1 = str(pdf.iat[i, 1]).strip() if pdf.shape[1] > 1 else ""
-                        if c0.lower().startswith("roles & responsibilities"):
-                            roles_start_idx = i
-                            break
+                        c2 = str(pdf.iat[i, 2]).strip() if pdf.shape[1] > 2 else ""
                         if not c0 and not c1:
                             continue
                         key = PD_LABELS_INV.get(c0)
                         if key:
                             pd_state[key] = c1
+                        if (
+                            roles_header_idx is None
+                            and c0 == "Entity"
+                            and c1 == "Description"
+                            and c2 == "Role & responsibility"
+                        ):
+                            roles_header_idx = i
 
                     # Convert the Roles table to the DataFrame shape the UI expects
                     import pandas as _pd
                     roles_df = _pd.DataFrame(columns=["Entity", "Description", "Role & responsibility"])
-                    if roles_start_idx is not None:
-                        header_row = roles_start_idx + 1  # "Entity | Description | Role & responsibility"
-                        table_start = roles_start_idx + 2
+                    if roles_header_idx is not None:
+                        table_start = roles_header_idx + 1
                         for r in range(table_start, len(pdf)):
                             ent = str(pdf.iat[r, 0]).strip() if pdf.shape[1] > 0 else ""
                             desc = str(pdf.iat[r, 1]).strip() if pdf.shape[1] > 1 else ""
@@ -2161,7 +2165,9 @@ Please complete each section of your project:
                                 "name": _s(row.get("Activity")),
                                 "owner": _s(row.get("Owner")),
                                 "start": parse_date_like(row.get("Start")),
-                                "end": parse_date_like(row.get("End"))
+                                "end": parse_date_like(row.get("End")),
+                                "kpi_ids": linked_kpi_ids,
+                                "dependencies": dep_ids,
                             })
 
                     else:
