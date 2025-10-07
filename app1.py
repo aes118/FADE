@@ -18,6 +18,38 @@ from docx.enum.section import WD_ORIENT, WD_SECTION_START
 from docx.shared import Pt
 from docx.oxml.ns import qn
 from tabs_registry import Tab, TabRegistry
+# put this near the top, after imports
+try:
+    from streamlit_quill import st_quill as _st_quill
+except Exception:
+    _st_quill = None
+
+def quill_html(widget_key: str, initial_html: str = "", placeholder: str = "", toolbar: bool = True) -> str:
+    """
+    Version-tolerant wrapper around streamlit-quill:
+    - Uses only supported args (value, html, placeholder, toolbar, key)
+    - Falls back gracefully if older signature is installed or plugin missing
+    """
+    if _st_quill is None:
+        # plugin not installed -> fallback
+        return st.text_area("", value=initial_html, help=placeholder, key=f"{widget_key}__fallback") or ""
+
+    # Try the modern signature (no 'height', no 'theme', no 'label')
+    try:
+        return _st_quill(
+            value=initial_html,
+            html=True,          # return HTML string
+            placeholder=placeholder,
+            toolbar=toolbar,
+            key=widget_key,
+        ) or ""
+    except TypeError:
+        # Very old versions may not accept keyword args other than key
+        try:
+            return _st_quill(initial_html, key=widget_key) or ""
+        except TypeError:
+            # Last resort fallback
+            return st.text_area("", value=initial_html, help=placeholder, key=f"{widget_key}__fallback2") or ""
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Falcon Awards Project Portal", layout="wide")
@@ -809,34 +841,103 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     from io import BytesIO
     from pathlib import Path
 
+    # --- Minimal HTML -> python-docx rendering (for Quill output) ---
+    def _add_runs(par, text, *, bold=False, italic=False, underline=False):
+        if not text:
+            return
+        run = par.add_run(text)
+        run.bold = bool(bold)
+        run.italic = bool(italic)
+        run.underline = bool(underline)
+
+    def _render_inline(par, node, ctx):
+        # node is NavigableString or Tag with inline semantics
+        from bs4 import BeautifulSoup, NavigableString, Tag
+        if isinstance(node, str):
+            _add_runs(par, node, **ctx)
+            return
+        if node.name in ("strong", "b"):
+            ctx2 = {**ctx, "bold": True}
+            for ch in node.children: _render_inline(par, ch, ctx2)
+        elif node.name in ("em", "i"):
+            ctx2 = {**ctx, "italic": True}
+            for ch in node.children: _render_inline(par, ch, ctx2)
+        elif node.name in ("u",):
+            ctx2 = {**ctx, "underline": True}
+            for ch in node.children: _render_inline(par, ch, ctx2)
+        elif node.name == "br":
+            par.add_run("\n")
+        elif node.name == "a":
+            # show link text + (URL)
+            href = node.get("href", "")
+            txt = node.get_text(strip=False)
+            _add_runs(par, txt, **ctx)
+            if href and href != txt:
+                _add_runs(par, f" ({href})", **ctx)
+        else:
+            # generic inline container (span, etc.)
+            for ch in node.children: _render_inline(par, ch, ctx)
+
+    def _render_block(doc, node):
+        # node is a Tag: p/div/ul/ol/li/h1/h2/h3…
+        from bs4 import BeautifulSoup
+        name = (node.name or "").lower()
+
+        if name in ("p", "div"):
+            par = doc.add_paragraph()
+            for ch in node.children:
+                _render_inline(par, ch, {"bold": False, "italic": False, "underline": False})
+
+        elif name in ("ul", "ol"):
+            bullet = (name == "ul")
+            for li in node.find_all("li", recursive=False):
+                style = "List Bullet" if bullet else "List Number"
+                par = doc.add_paragraph(style=style)
+                for ch in li.children:
+                    _render_inline(par, ch, {"bold": False, "italic": False, "underline": False})
+
+        elif name in ("h1", "h2", "h3"):
+            # map HTML headings to Word headings (keep it simple)
+            style = "Heading 2" if name == "h2" else ("Heading 3" if name == "h3" else "Heading 2")
+            par = doc.add_paragraph(style=style)
+            par.add_run(node.get_text(strip=True))
+
+        else:
+            # fallback: create a paragraph with text
+            par = doc.add_paragraph()
+            par.add_run(node.get_text(strip=False))
+
+    def _render_quill_html(doc, html_string: str):
+        """Render a small subset of HTML into the doc (paragraphs, inline styles, lists, links)."""
+        from bs4 import BeautifulSoup
+        html_string = (html_string or "").strip()
+        if not html_string:
+            return
+        soup = BeautifulSoup(html_string, "html.parser")
+        # If the editor returns raw text w/o block tags, wrap as one paragraph
+        top_blocks = [n for n in soup.contents if getattr(n, "name", None) or str(n).strip()]
+        if not any(getattr(n, "name", None) in ("p", "div", "ul", "ol", "h1", "h2", "h3") for n in soup.find_all(True)):
+            par = doc.add_paragraph()
+            par.add_run(soup.get_text(strip=False))
+            return
+        for n in soup.contents:
+            if getattr(n, "name", None):
+                _render_block(doc, n)
+            else:
+                # stray text between blocks -> its own paragraph
+                t = str(n).strip()
+                if t:
+                    doc.add_paragraph(t)
+
     template_path = Path("templates/pdd_template.docx")
     if not template_path.exists():
         st.error(f"Template not found: {template_path}")
         raise FileNotFoundError(f"Template not found: {template_path}")
 
-    def _render_plain_to_doc(doc, text: str):
-        """Render plain text into Word: split on blank lines into paragraphs; simple bullets if lines start with -, *, or •."""
-        if not text:
-            return
-        blocks = re.split(r"\n\s*\n", text.strip())
-        for block in blocks:
-            lines = block.splitlines()
-            # If at least half of the lines look like bullets, render as a bulleted list
-            bullet_lines = [ln for ln in lines if re.match(r"^\s*([\-*•])\s+", ln)]
-            if lines and len(bullet_lines) >= max(1, len(lines) // 2):
-                for ln in lines:
-                    m = re.match(r"^\s*([\-*•])\s+(.*)$", ln)
-                    content = m.group(2) if m else ln
-                    doc.add_paragraph(content, style="List Bullet")
-            else:
-                p = doc.add_paragraph()
-                for i, ln in enumerate(lines):
-                    if i:
-                        p.add_run("\n")
-                    p.add_run(ln)
+    doc = Document(str(template_path))
 
     from copy import deepcopy
-    doc = Document(str(template_path))
+
     body = doc.element.body
 
     # Keep the section properties (<w:sectPr>) before clearing
@@ -987,12 +1088,13 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         # Right column: normal
         _set_cell_text(overview_table.cell(row_idx, 1), _s(value))
 
-    # --- Project Detail (headings + plain text from session_state) ---
+    # --- Project Detail (headings + rich text from session_state) ---
     PD = st.session_state.get("project_detail", {}) or {}
 
     doc.add_page_break()
     _h1("Project Detail")
 
+    # Order & labels shown as H2s, each followed by rendered HTML body
     DETAIL_ORDER = [
         ("Goal and Expected Impact", "goal_impact"),
         ("Summary", "summary"),
@@ -1004,11 +1106,12 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     ]
 
     for label, key in DETAIL_ORDER:
-        content = (PD.get(key) or "").strip()
-        if not content:
+        html_body = (PD.get(key) or "").strip()
+        if not html_body:
             continue
+        # Heading one level below "Project Detail"
         doc.add_paragraph(label, style="Heading 2")
-        _render_plain_to_doc(doc, content)
+        _render_quill_html(doc, html_body)
 
     # Roles table under its own H2, if present
     roles_df = PD.get("roles_table")
@@ -2083,6 +2186,22 @@ Please complete each section of your project:
                     st.session_state.setdefault("project_detail", {})
                     st.session_state.project_detail.update(pd_state)
 
+                    # --- Prime widget keys so imported text appears in Project Detail tab ---
+                    # Reset Project Detail widget states so they re-seed from imported text
+                    for k in [
+                        "goal_impact",
+                        "summary",
+                        "detailed_description",
+                        "alignment",
+                        "ownership_sustainability",
+                        "reporting_me",
+                        "comms_publicity",
+                    ]:
+                        st.session_state.pop(f"pd_q_{k}", None)  # remove widget state if it exists
+
+                    # also reset the roles editor widget key (we use a versioned key anyway)
+                    st.session_state.pop("pd_roles_editor", None)
+
                 # ---- KPI Matrix (ID-based) ----
                 if "KPI Matrix" in xls.sheet_names:
                     kdf = pd.read_excel(xls, sheet_name="KPI Matrix")
@@ -2547,11 +2666,10 @@ def render_project_detail():
     PD = st.session_state["project_detail"]
 
     def _rbox(key: str, label: str, help_text: str, *, height: int | None = None, **_ignored):
-        """Simple free-text editor (Streamlit text_area), mirroring Project Overview style."""
         PD = st.session_state.setdefault("project_detail", {})
-        stored = (PD.get(key) or "").strip()
+        initial_html = (PD.get(key) or "").strip()
 
-        # Label + tooltip (same visual you already use)
+        # Label with subtle hover tooltip (no caption; avoids duplication)
         if help_text:
             st.markdown(
                 f"""
@@ -2566,18 +2684,14 @@ def render_project_detail():
         else:
             st.markdown(f"**{html.escape(label)}**")
 
-        # Versioned key so a fresh import reseeds the widget correctly
-        version = st.session_state.get("_resume_file_sig", "")
-        new_val = st.text_area(
-            label="",
-            value=stored,
-            key=f"pd_ta_{key}__{version}",
-            height=height or 180,
+        val = quill_html(
+            widget_key=f"pd_q_{key}",
+            initial_html=(PD.get(key) or "").strip(),
+            placeholder="",
+            toolbar=True,
         )
-
-        # Persist only on change
-        if new_val != stored:
-            PD[key] = (new_val or "").strip()
+        if val != initial_html:
+            PD[key] = val
 
     # 1) Goal and Expected Impact
     _rbox(
