@@ -74,6 +74,22 @@ LABELS = {
     "activities_count": "# Activities (From Workplan)",
 }
 
+PROJECT_DETAIL_MAP = {
+    "Goal & Expected impact": "goal_expected_impact",
+    "Rationale": "rationale",
+    "Context": "context",
+    "Objectives": "objectives",
+    "Summary": "summary",
+}
+
+def _normalize_project_detail_label(label: str) -> str:
+    return str(label or "").strip().lower()
+
+_PROJECT_DETAIL_NORMALIZED = {
+    _normalize_project_detail_label(label): (label, key)
+    for label, key in PROJECT_DETAIL_MAP.items()
+}
+
 # ---------------- Helpers & State ----------------
 def _s(v):
     try:
@@ -1014,20 +1030,16 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
             tmp.columns = [str(c).strip() for c in tmp.columns]
             fields_df = tmp[["Field", "Value"]].copy()
 
-        EXPECTED = {
-            "Goal & Expected impact": "goal_impact",
-            "Summary": "summary",
-            "Detailed Description": "detailed_description",
-            "Alignment with National & International Priorities": "alignment",
-            "National Ownership & Sustainability": "ownership_sustainability",
-            "Reporting, Monitoring & Evaluation": "reporting_me",
-            "Communications & Publicity": "comms_publicity",
-        }
-
         PD = st.session_state.setdefault("project_detail", {})
-        for label, key in EXPECTED.items():
-            match = fields_df.loc[fields_df["Field"].astype(str).str.strip() == label, "Value"]
-            PD[key] = (match.iloc[0] if not match.empty else "").strip()
+        fields_df = fields_df.assign(
+            __field_norm=fields_df["Field"].apply(_normalize_project_detail_label)
+        )
+
+        for label, key in PROJECT_DETAIL_MAP.items():
+            norm = _normalize_project_detail_label(label)
+            match = fields_df.loc[fields_df["__field_norm"] == norm, "Value"]
+            cell = match.iloc[0] if not match.empty else ""
+            PD[key] = "" if cell is None else str(cell)
 
         # Roles table: locate the header row with exact names and read everything below it
         raw_df = pd.read_excel(xls, sheet_name="Project Detail", header=None, dtype=str).fillna("")
@@ -2042,35 +2054,26 @@ Please complete each section of your project:
                 if "Project Detail" in xls.sheet_names:
                     pdf = pd.read_excel(xls, sheet_name="Project Detail", header=None).fillna("")
 
-                    # Map EXACTLY to the keys the UI/export uses
-                    PD_LABELS_INV = {
-                        "Goal & Expected impact": "goal_impact",
-                        "Summary": "summary",
-                        "Detailed Description": "detailed_description",
-                        "Alignment with National & International Priorities": "alignment",
-                        "National Ownership & Sustainability": "ownership_sustainability",
-                        "Reporting, Monitoring & Evaluation": "reporting_me",
-                        "Communications & Publicity": "comms_publicity",
-                    }
-
-                    pd_state = {k: "" for k in PD_LABELS_INV.values()}
+                    pd_state = {key: "" for key in PROJECT_DETAIL_MAP.values()}
                     roles_header_idx = None
 
                     # Read top “Field | Value” pairs until we hit the Roles section
                     for i in range(len(pdf)):
-                        c0 = str(pdf.iat[i, 0]).strip()
-                        c1 = str(pdf.iat[i, 1]).strip() if pdf.shape[1] > 1 else ""
-                        c2 = str(pdf.iat[i, 2]).strip() if pdf.shape[1] > 2 else ""
-                        if not c0 and not c1:
+                        raw_label = pdf.iat[i, 0]
+                        c1 = pdf.iat[i, 1] if pdf.shape[1] > 1 else ""
+                        c2 = pdf.iat[i, 2] if pdf.shape[1] > 2 else ""
+
+                        label_norm = _normalize_project_detail_label(raw_label)
+                        if not label_norm and not str(c1 or "").strip():
                             continue
-                        key = PD_LABELS_INV.get(c0)
+                        key = _PROJECT_DETAIL_NORMALIZED.get(label_norm, (None, None))[1]
                         if key:
-                            pd_state[key] = c1
+                            pd_state[key] = "" if c1 is None else str(c1)
                         if (
                             roles_header_idx is None
-                            and c0 == "Entity"
-                            and c1 == "Description"
-                            and c2 == "Role & responsibility"
+                            and str(raw_label or "").strip() == "Entity"
+                            and str(c1 or "").strip() == "Description"
+                            and str(c2 or "").strip() == "Role & responsibility"
                         ):
                             roles_header_idx = i
 
@@ -2559,7 +2562,7 @@ def render_project_detail():
 
     def _rbox(key: str, label: str, help_text: str, *, height: int | None = None, **_ignored):
         PD = st.session_state.setdefault("project_detail", {})
-        initial_html = (PD.get(key) or "").strip()
+        initial_html = "" if PD.get(key) is None else str(PD.get(key))
 
         # Label with subtle hover tooltip (no caption; avoids duplication)
         if help_text:
@@ -2576,74 +2579,24 @@ def render_project_detail():
         else:
             st.markdown(f"**{html.escape(label)}**")
 
-        PD[key] = quill_html(
+        value = quill_html(
             widget_key=f"pd_q_{key}",
             initial_html=initial_html,
             placeholder="",  # keep empty to avoid duplicate help text in editor
             toolbar=True,
         )
+        PD[key] = "" if value is None else str(value)
 
-    # 1) Goal & Expected impact
-    _rbox(
-        "goal_impact",
-        "Goal & Expected impact",
-        "Outline the Goal of the project and its expected impact on disease elimination.",
-    )
+    help_text = {
+        "goal_expected_impact": "Outline the Goal of the project and its expected impact on disease elimination.",
+        "rationale": "Explain why the project is needed now, referencing evidence, stakeholder demand, or gaps identified.",
+        "context": "Describe the implementation setting, key stakeholders, and any enabling or constraining factors.",
+        "objectives": "List the specific objectives or results the project will deliver (e.g., aligned to outputs/KPIs).",
+        "summary": "Provide a brief summary of the project.",
+    }
 
-    # 2) Summary
-    _rbox(
-        "summary",
-        "Summary",
-        "Provide a brief summary of the project.",
-        height=120,
-    )
-
-    # 3) Detailed Description
-    _rbox(
-        "detailed_description",
-        "Detailed Description",
-        "Provide a more detailed description of the project and context including the issue or gap "
-            "that the project aims to address as well as the opportunities. Provide a comprehensive narrative "
-            "explaining how each output and its associated activities contribute to achieving the project goal and "
-            "outcome. For each output, describe its purpose, the main activities that will deliver it. Clearly explain "
-            "how success will be measured through the identified KPIs and how the planned activities and resources "
-            "justify the proposed budget. This section should demonstrate the internal logic of the project - "
-            "showing how inputs, activities, and outputs collectively drive progress toward the desired impact."
-        ,
-        height=220,
-    )
-
-    # 4) Alignment with National & International Priorities
-    _rbox(
-        "alignment",
-        "Alignment with National & International Priorities",
-        "Describe alignment with national strategies/policies/action plans and international commitments (e.g., SDGs, WHO roadmaps).",
-        height=160,
-    )
-
-    # 5) National Ownership & Sustainability
-    _rbox(
-        "ownership_sustainability",
-        "National Ownership & Sustainability",
-        "Describe local stakeholder engagement/leadership and how benefits/impact will be sustained beyond the grant.",
-        height=160,
-    )
-
-    # 6) Reporting, Monitoring & Evaluation
-    _rbox(
-        "reporting_me",
-        "Reporting, Monitoring & Evaluation",
-        "Outline reporting requirements (frequency/types), expectations for financial reporting, periodic updates, and the final report.",
-        height=160,
-    )
-
-    # 7) Communications & Publicity
-    _rbox(
-        "comms_publicity",
-        "Communications & Publicity",
-        "Outline the visibility/communications plan, branding requirements, media engagement, and expected contributions to partners’ visibility, with indicative timelines.",
-        height=160,
-    )
+    for label, key in PROJECT_DETAIL_MAP.items():
+        _rbox(key, label, help_text.get(key, ""))
 
     st.markdown("### Roles & Responsibilities")
 
@@ -3441,17 +3394,9 @@ def render_export():
         ws_pd = wb.create_sheet("Project Detail", 1)  # insert right after Project Overview
         ws_pd.append(["Field", "Value"])
 
-        def _row(label, key):
-            val = (pd_state.get(key) or "").strip()
-            ws_pd.append([label, val])
-
-        _row("Goal & Expected impact", "goal_impact")
-        _row("Summary", "summary")
-        _row("Detailed Description", "detailed_description")
-        _row("Alignment with National & International Priorities", "alignment")
-        _row("National Ownership & Sustainability", "ownership_sustainability")
-        _row("Reporting, Monitoring & Evaluation", "reporting_me")
-        _row("Communications & Publicity", "comms_publicity")
+        for label, key in PROJECT_DETAIL_MAP.items():
+            val = pd_state.get(key)
+            ws_pd.append([label, "" if val is None else str(val)])
 
         # --- Roles & Responsibilities table ---
         import pandas as _pd
