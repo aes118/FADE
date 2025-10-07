@@ -18,7 +18,38 @@ from docx.enum.section import WD_ORIENT, WD_SECTION_START
 from docx.shared import Pt
 from docx.oxml.ns import qn
 from tabs_registry import Tab, TabRegistry
+# put this near the top, after imports
+try:
+    from streamlit_quill import st_quill as _st_quill
+except Exception:
+    _st_quill = None
 
+def quill_html(widget_key: str, initial_html: str = "", placeholder: str = "", toolbar: bool = True) -> str:
+    """
+    Version-tolerant wrapper around streamlit-quill:
+    - Uses only supported args (value, html, placeholder, toolbar, key)
+    - Falls back gracefully if older signature is installed or plugin missing
+    """
+    if _st_quill is None:
+        # plugin not installed -> fallback
+        return st.text_area("", value=initial_html, help=placeholder, key=f"{widget_key}__fallback") or ""
+
+    # Try the modern signature (no 'height', no 'theme', no 'label')
+    try:
+        return _st_quill(
+            value=initial_html,
+            html=True,          # return HTML string
+            placeholder=placeholder,
+            toolbar=toolbar,
+            key=widget_key,
+        ) or ""
+    except TypeError:
+        # Very old versions may not accept keyword args other than key
+        try:
+            return _st_quill(initial_html, key=widget_key) or ""
+        except TypeError:
+            # Last resort fallback
+            return st.text_area("", value=initial_html, help=placeholder, key=f"{widget_key}__fallback2") or ""
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Falcon Awards Project Portal", layout="wide")
@@ -26,9 +57,9 @@ st.sidebar.image("glide_logo.png", width="stretch")
 
 # ---------------- Canonical field labels ----------------
 LABELS = {
-    "title": "Project title",
-    "pi_name": "Principal Investigator (PI) name",
-    "pi_email": "PI email",
+    "title": "Project Title",
+    "pi_name": "Project Lead",
+    "pi_email": "Project Lead Email",
     "implementing_partners": "Implementing Partner(s)",
     "supporting_partners": "Supporting Partners (Optional)",
     "start_date": "Project start date",
@@ -969,6 +1000,63 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         # Right column: normal
         _set_cell_text(overview_table.cell(row_idx, 1), _s(value))
 
+    # --- Project Detail ---
+    if "Project Detail" in xls.sheet_names:
+        pdf = pd.read_excel(xls, sheet_name="Project Detail", dtype=str).fillna("")
+
+        # Expect the top section to have the "Field" / "Value" columns
+        # Find that block (first two named columns)
+        if {"Field", "Value"}.issubset(set(pdf.columns)):
+            fields_df = pdf[["Field", "Value"]].copy()
+        else:
+            # Some writers shift headers to row 0; try forcing the first two columns to these names
+            tmp = pd.read_excel(xls, sheet_name="Project Detail", header=0, dtype=str).fillna("")
+            tmp.columns = [str(c).strip() for c in tmp.columns]
+            fields_df = tmp[["Field", "Value"]].copy()
+
+        EXPECTED = {
+            "Goal & Expected impact": "goal_impact",
+            "Summary": "summary",
+            "Detailed Description": "detailed_description",
+            "Alignment with National & International Priorities": "alignment",
+            "National Ownership & Sustainability": "ownership_sustainability",
+            "Reporting, Monitoring & Evaluation": "reporting_me",
+            "Communications & Publicity": "comms_publicity",
+        }
+
+        PD = st.session_state.setdefault("project_detail", {})
+        for label, key in EXPECTED.items():
+            match = fields_df.loc[fields_df["Field"].astype(str).str.strip() == label, "Value"]
+            PD[key] = (match.iloc[0] if not match.empty else "").strip()
+
+        # Roles table: locate the header row with exact names and read everything below it
+        raw_df = pd.read_excel(xls, sheet_name="Project Detail", header=None, dtype=str).fillna("")
+        roles_header = None
+        for i in range(len(raw_df)):
+            r0 = str(raw_df.iat[i, 0]).strip()
+            r1 = str(raw_df.iat[i, 1]).strip()
+            r2 = str(raw_df.iat[i, 2]).strip() if raw_df.shape[1] > 2 else ""
+            if r0 == "Entity" and r1 == "Description" and r2 == "Role & responsibility":
+                roles_header = i
+                break
+
+        import pandas as _pd
+        if roles_header is not None:
+            data_rows = []
+            for r in range(roles_header + 1, len(raw_df)):
+                ent = str(raw_df.iat[r, 0]).strip() if raw_df.shape[1] > 0 else ""
+                desc = str(raw_df.iat[r, 1]).strip() if raw_df.shape[1] > 1 else ""
+                role = str(raw_df.iat[r, 2]).strip() if raw_df.shape[1] > 2 else ""
+                if not any([ent, desc, role]):
+                    break
+                data_rows.append({"Entity": ent, "Description": desc, "Role & responsibility": role})
+            PD["roles_table"] = _pd.DataFrame(
+                data_rows, columns=["Entity", "Description", "Role & responsibility"]
+            )
+        else:
+            PD["roles_table"] = _pd.DataFrame(columns=["Entity", "Description", "Role & responsibility"])
+
+    # --- Logframe ---
     doc.add_page_break()
     _h1("Logframe")
 
@@ -1133,6 +1221,7 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
 
     doc.add_paragraph("")
 
+    # --- Workplan ---
     workplan_section = _new_landscape_section("Workplan")
     df_wp = _workplan_df()
     if df_wp.empty:
@@ -1223,6 +1312,7 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
 
     doc.add_paragraph("")
 
+    # --- Budget ---
     _new_landscape_section("Budget")
     bt = doc.add_table(rows=1, cols=8)
     bt.style = "Table Grid"
@@ -1272,6 +1362,7 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     note_run = note.add_run(footer_note)
     note_run.italic = True
 
+    # --- Disbursement Schedule ---
     _ensure_portrait_section("Disbursement Schedule")
     from datetime import date as _date
 
@@ -1947,6 +2038,56 @@ Please complete each section of your project:
                             "assumptions": ass
                         })
 
+                # --- Import Project Detail (free text + roles table) ---
+                if "Project Detail" in xls.sheet_names:
+                    pdf = pd.read_excel(xls, sheet_name="Project Detail", header=None).fillna("")
+
+                    # Map EXACTLY to the keys the UI/export uses
+                    PD_LABELS_INV = {
+                        "Goal & Expected impact": "goal_impact",
+                        "Summary": "summary",
+                        "Detailed Description": "detailed_description",
+                        "Alignment with National & International Priorities": "alignment",
+                        "National Ownership & Sustainability": "ownership_sustainability",
+                        "Reporting, Monitoring & Evaluation": "reporting_me",
+                        "Communications & Publicity": "comms_publicity",
+                    }
+
+                    pd_state = {}
+                    roles_start_idx = None
+
+                    # Read top “Field | Value” pairs until we hit the Roles section
+                    for i in range(len(pdf)):
+                        c0 = str(pdf.iat[i, 0]).strip()
+                        c1 = str(pdf.iat[i, 1]).strip() if pdf.shape[1] > 1 else ""
+                        if c0.lower().startswith("roles & responsibilities"):
+                            roles_start_idx = i
+                            break
+                        if not c0 and not c1:
+                            continue
+                        key = PD_LABELS_INV.get(c0)
+                        if key:
+                            pd_state[key] = c1
+
+                    # Convert the Roles table to the DataFrame shape the UI expects
+                    import pandas as _pd
+                    roles_df = _pd.DataFrame(columns=["Entity", "Description", "Role & responsibility"])
+                    if roles_start_idx is not None:
+                        header_row = roles_start_idx + 1  # "Entity | Description | Role & responsibility"
+                        table_start = roles_start_idx + 2
+                        for r in range(table_start, len(pdf)):
+                            ent = str(pdf.iat[r, 0]).strip() if pdf.shape[1] > 0 else ""
+                            desc = str(pdf.iat[r, 1]).strip() if pdf.shape[1] > 1 else ""
+                            role = str(pdf.iat[r, 2]).strip() if pdf.shape[1] > 2 else ""
+                            if ent == "" and desc == "" and role == "":
+                                break
+                            roles_df.loc[len(roles_df)] = [ent, desc, role]
+
+                    pd_state["roles_table"] = roles_df
+
+                    st.session_state.setdefault("project_detail", {})
+                    st.session_state.project_detail.update(pd_state)
+
                 # ---- KPI Matrix (ID-based) ----
                 if "KPI Matrix" in xls.sheet_names:
                     kdf = pd.read_excel(xls, sheet_name="KPI Matrix")
@@ -2402,7 +2543,123 @@ def render_overview():
         for w in warnings:
             st.warning(w)
 
-# ===== TAB 3: Logframe =====
+# ===== TAB 3: Project Detail =====
+def render_project_detail():
+    st.header("📋 Project Detail")
+
+    # one place to keep everything
+    st.session_state.setdefault("project_detail", {})
+    PD = st.session_state["project_detail"]
+
+    def _rbox(key: str, label: str, help_text: str, *, height: int | None = None, **_ignored):
+        PD = st.session_state.setdefault("project_detail", {})
+        initial_html = (PD.get(key) or "").strip()
+
+        # Label with subtle hover tooltip (no caption; avoids duplication)
+        if help_text:
+            st.markdown(
+                f"""
+                <div style="display:flex;align-items:center;gap:6px;">
+                  <strong>{html.escape(label)}</strong>
+                  <span title="{html.escape(help_text)}"
+                        style="cursor:help;color:#888;font-size:0.9em;">&#9432;</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(f"**{html.escape(label)}**")
+
+        PD[key] = quill_html(
+            widget_key=f"pd_q_{key}",
+            initial_html=initial_html,
+            placeholder="",  # keep empty to avoid duplicate help text in editor
+            toolbar=True,
+        )
+
+    # 1) Goal & Expected impact
+    _rbox(
+        "goal_impact",
+        "Goal & Expected impact",
+        "Outline the Goal of the project and its expected impact on disease elimination.",
+    )
+
+    # 2) Summary
+    _rbox(
+        "summary",
+        "Summary",
+        "Provide a brief summary of the project.",
+        height=120,
+    )
+
+    # 3) Detailed Description
+    _rbox(
+        "detailed_description",
+        "Detailed Description",
+        "Provide a more detailed description of the project and context including the issue or gap "
+            "that the project aims to address as well as the opportunities. Provide a comprehensive narrative "
+            "explaining how each output and its associated activities contribute to achieving the project goal and "
+            "outcome. For each output, describe its purpose, the main activities that will deliver it. Clearly explain "
+            "how success will be measured through the identified KPIs and how the planned activities and resources "
+            "justify the proposed budget. This section should demonstrate the internal logic of the project - "
+            "showing how inputs, activities, and outputs collectively drive progress toward the desired impact."
+        ,
+        height=220,
+    )
+
+    # 4) Alignment with National & International Priorities
+    _rbox(
+        "alignment",
+        "Alignment with National & International Priorities",
+        "Describe alignment with national strategies/policies/action plans and international commitments (e.g., SDGs, WHO roadmaps).",
+        height=160,
+    )
+
+    # 5) National Ownership & Sustainability
+    _rbox(
+        "ownership_sustainability",
+        "National Ownership & Sustainability",
+        "Describe local stakeholder engagement/leadership and how benefits/impact will be sustained beyond the grant.",
+        height=160,
+    )
+
+    # 6) Reporting, Monitoring & Evaluation
+    _rbox(
+        "reporting_me",
+        "Reporting, Monitoring & Evaluation",
+        "Outline reporting requirements (frequency/types), expectations for financial reporting, periodic updates, and the final report.",
+        height=160,
+    )
+
+    # 7) Communications & Publicity
+    _rbox(
+        "comms_publicity",
+        "Communications & Publicity",
+        "Outline the visibility/communications plan, branding requirements, media engagement, and expected contributions to partners’ visibility, with indicative timelines.",
+        height=160,
+    )
+
+    st.markdown("### Roles & Responsibilities")
+
+    # 8) Roles & Responsibilities — table
+    import pandas as _pd
+    PD.setdefault("roles_table", _pd.DataFrame(columns=["Entity", "Description", "Role & responsibility"]))
+    # data_editor lets users add/remove rows inline
+    PD["roles_table"] = st.data_editor(
+        PD["roles_table"],
+        num_rows="dynamic",
+        use_container_width=True,
+        key="pd_roles_editor",
+        column_config={
+            "Entity": st.column_config.TextColumn(required=False, width="medium"),
+            "Description": st.column_config.TextColumn(required=False, width="large"),
+            "Role & responsibility": st.column_config.TextColumn(required=False, width="large"),
+        },
+    )
+
+    st.caption("Tip: Add as many rows as needed.")
+
+# ===== TAB 4: Logframe =====
 def render_logframe():
     st.header("🧱 Logframe")
     inject_logframe_css()
@@ -2720,7 +2977,7 @@ def render_logframe():
                             key_prefix="lf"
                         )
 
-# ===== TAB 4: Workplan =====
+# ===== TAB 5: Workplan =====
 def render_workplan():
     st.header("🗂️ Workplan")
     with st.expander("➕ Add Activity"):
@@ -2831,7 +3088,7 @@ def render_workplan():
                         st.session_state.workplan = [x for x in st.session_state.workplan if x["id"] != a["id"]]
                         st.rerun()
 
-# ===== TAB 5: Budget =====
+# ===== TAB 6: Budget =====
 def render_budget():
     st.header("💵 Define Budget")
     st.caption("Enter amounts in USD")
@@ -3085,7 +3342,7 @@ def render_budget():
     st.markdown(f"**Total: USD {grand_total:,.2f}**")
     st.caption(footer_note)
 
-# ===== TAB 6: Disbursement Schedule =====
+# ===== TAB 7: Disbursement Schedule =====
 def render_disbursement():
     st.header("💸 Disbursement Schedule")
 
@@ -3121,7 +3378,7 @@ def render_disbursement():
                 row["amount_usd"] = float(new_amt)
     st.caption(footer_note)
 
-# ===== TAB 7: Export =====
+# ===== TAB 8: Export =====
 def render_export():
     st.header("📤 Export Your Application")
 
@@ -3153,7 +3410,7 @@ def render_export():
         kpis_count = len(st.session_state.get("kpis", []))
         activities_count = len(st.session_state.get("workplan", []))
 
-        # Sheet 0: Project Overview
+        # Sheet 1: Project Overview
         ws_id = wb.create_sheet("Project Overview", 0)
         ws_id.append(["Field", "Value"])
         ws_id.append([LABELS["title"], proj_title])
@@ -3172,7 +3429,41 @@ def render_export():
         ws_id.append([LABELS["kpis_count"], kpis_count])
         ws_id.append([LABELS["activities_count"], activities_count])
 
-        # Sheet 1: Summary
+        # --- Sheet 2: Project Detail ---
+        pd_state = st.session_state.get("project_detail", {})
+
+        ws_pd = wb.create_sheet("Project Detail", 1)  # insert right after Project Overview
+        ws_pd.append(["Field", "Value"])
+
+        def _row(label, key):
+            val = (pd_state.get(key) or "").strip()
+            ws_pd.append([label, val])
+
+        _row("Goal & Expected impact", "goal_impact")
+        _row("Summary", "summary")
+        _row("Detailed Description", "detailed_description")
+        _row("Alignment with National & International Priorities", "alignment")
+        _row("National Ownership & Sustainability", "ownership_sustainability")
+        _row("Reporting, Monitoring & Evaluation", "reporting_me")
+        _row("Communications & Publicity", "comms_publicity")
+
+        # --- Roles & Responsibilities table ---
+        import pandas as _pd
+        roles_df = pd_state.get("roles_table")
+        ws_pd.append([])  # blank line
+        ws_pd.append(["Entity", "Description", "Role & responsibility"])
+
+        if isinstance(roles_df, _pd.DataFrame) and not roles_df.empty:
+            for _, r in roles_df.iterrows():
+                ws_pd.append([
+                    str(r.get("Entity", "")),
+                    str(r.get("Description", "")),
+                    str(r.get("Role & responsibility", "")),
+                ])
+        else:
+            ws_pd.append(["", "", ""])
+
+        # Sheet 3: Summary
         s1 = wb.create_sheet("Summary", 1)
         s1.append(["RowLevel", "ID", "ParentID", "Text / Title", "Assumptions"])
         for row in st.session_state.get("impacts", []):
@@ -3182,7 +3473,7 @@ def render_export():
         for row in st.session_state.get("outputs", []):
             s1.append(["Output", row.get("id", ""), row.get("parent_id", ""), row.get("name", ""), row.get("assumptions", "")])
 
-        # Sheet 2: KPI Matrix
+        # Sheet 4: KPI Matrix
         s2 = wb.create_sheet("KPI Matrix")
         s2.append(["KPIID","Parent Level","ParentID","Parent (label)","KPI","Baseline","Target","Linked to Payment","Means of Verification"])
         out_nums, kpi_nums = compute_numbers()
@@ -3198,7 +3489,7 @@ def render_export():
                 "Yes" if k.get("linked_payment") else "No", k.get("mov","")
             ])
 
-        # Sheet 3: Workplan
+        # Sheet 5: Workplan
         out_nums, kpi_nums, act_nums = compute_numbers(include_activities=True)
         ws2 = wb.create_sheet("Workplan")
         ws2.append(["Activity ID","Activity #","OutputID","Output","Activity","Owner","Start","End","Linked KPI IDs","Linked KPIs"])
@@ -3213,7 +3504,7 @@ def render_export():
                 ", ".join(id_to_kpi.get(i,"") for i in (a.get("kpi_ids") or [])),
             ])
 
-        # Sheet 4: Budget
+        # Sheet 6: Budget
         ws3 = wb.create_sheet("Budget")
         ws3.append(["Linked Output","Linked Activity","Budget Line Item","Cost Category","Sub Category","Unit","Unit Cost (USD)","Quantity","Total Cost (USD)"])
         out_label = lambda oid: (f"Output {out_nums.get(oid,'')} — " + (next((o.get('name','') for o in st.session_state.outputs if o['id']==oid), ""))).strip(" —")
@@ -3231,7 +3522,7 @@ def render_export():
             row[7].number_format = '#,##0.00'
             row[8].number_format = '#,##0.00'
 
-        # Sheet 5: Disbursement Schedule
+        # Sheet 7: Disbursement Schedule
         wsd = wb.create_sheet("Disbursement Schedule")
         wsd.append(["KPIID","Anticipated deliverable date","Deliverable","Maximum Grant instalment payable on satisfaction of this deliverable (USD)"])
         from datetime import date as _date
@@ -3278,6 +3569,7 @@ def render_export():
 reg = TabRegistry()
 reg.register(Tab(key="welcome", label="📘 Welcome & Instructions", render=render_welcome))
 reg.register(Tab(key="overview", label="🪪 Project Overview", render=render_overview))
+reg.register(Tab(key="project_detail", label="📋 Project Detail", render=render_project_detail))
 reg.register(Tab(key="logframe", label="🧱 Logframe", render=render_logframe))
 reg.register(Tab(key="workplan", label="🗂️ Workplan", render=render_workplan))
 reg.register(Tab(key="budget", label="💵 Budget", render=render_budget))
