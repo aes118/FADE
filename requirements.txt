@@ -3,6 +3,6 @@ pandas>=2.0
 openpyxl>=3.1
 python-docx>=1.1
 html2docx>=1.6
-streamlit-quill>=0.1.0
+streamlit-quill
 matplotlib>=3.8
 requests>=2.31
