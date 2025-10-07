@@ -649,17 +649,6 @@ def _force_calibri_everywhere(doc, body_size_pt: int = 11):
                         run.font.name = "Calibri"
                         # run.font.size = Pt(body_size_pt)  # <-- DON'T
 
-# Risk choices
-RISK_PROB_CHOICES = ["Low", "Medium", "High"]
-RISK_IMPACT_CHOICES = ["Low", "Medium", "High"]
-
-def risks_df() -> pd.DataFrame:
-    cols = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
-    if not st.session_state.get("risks"):
-        return pd.DataFrame(columns=cols)
-    df = pd.DataFrame(st.session_state["risks"])
-    return df.reindex(columns=cols, fill_value="")
-
 def _render_budget_row_editor(rec: dict, rid: str, act_lookup: dict) -> None:
     """Standalone editor card for a single budget row (rid).
     - Seeds once from rec; preserves user edits across reruns
@@ -3437,38 +3426,60 @@ def render_disbursement():
 def render_risk_assessment():
     st.header("⚠️ Risk Assessment")
 
-    cols = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
-    PROB_OPTIONS = ["", "Low", "Medium", "High"]   # include blank
-    IMPACT_OPTIONS = ["", "Low", "Medium", "High"] # include blank
+    import pandas as _pd
 
-    # 1) Seed exactly once (or when importing Excel)
+    COLS = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
+    PROB  = ["", "Low", "Medium", "High"]
+    IMPCT = ["", "Low", "Medium", "High"]
+
+    # 1) Seed once, with the right columns
     if "_risk_df" not in st.session_state:
-        import pandas as _pd
-        base_rows = st.session_state.get("risks", [])
-        st.session_state["_risk_df"] = _pd.DataFrame(base_rows, columns=cols)
+        st.session_state["_risk_df"] = _pd.DataFrame(st.session_state.get("risks", []), columns=COLS)
 
-    df = st.session_state["_risk_df"]
+    df = st.session_state["_risk_df"]          # ← SAME object every rerun
 
-    # 2) Show editor; DO NOT rebuild/clean the df before passing it in
+    # Ensure required columns exist (in-place) and drop extras (in-place)
+    for c in COLS:
+        if c not in df.columns:
+            df[c] = ""
+    extra = [c for c in df.columns if c not in COLS]
+    if extra:
+        df.drop(columns=extra, inplace=True)
+
+    # Optional: widen the grid a bit
+    st.markdown("""
+    <style>
+      [data-testid="stDataEditor"] { width: 100% !important; }
+      [data-testid="stDataEditor"] > div { overflow-x: hidden !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
     edited = st.data_editor(
-        df,
+        df,                                  # ← pass the SAME object
         num_rows="dynamic",
-        use_container_width=True,
         hide_index=True,
+        use_container_width=True,
+        column_order=COLS,
         column_config={
             "Risk":        st.column_config.TextColumn(width="large"),
-            "Probability": st.column_config.SelectboxColumn(options=PROB_OPTIONS, width="small", required=False),
-            "Impact":      st.column_config.SelectboxColumn(options=IMPACT_OPTIONS, width="small", required=False),
+            "Probability": st.column_config.SelectboxColumn(options=PROB,  width="small"),
+            "Impact":      st.column_config.SelectboxColumn(options=IMPCT, width="small"),
             "Mitigation":  st.column_config.TextColumn(width="large"),
             "Owner":       st.column_config.TextColumn(width="medium"),
         },
         key="risk_editor",
     )
 
-    # 3) Persist the edited DF only to the stable slot; don't clean/filter here
-    st.session_state["_risk_df"] = edited
-    # (Optional) If you want the list mirror, do it *without* cleaning:
-    # st.session_state["risks"] = edited.to_dict(orient="records")
+    # 2) Write back WITHOUT changing the object identity when shape is the same
+    same_shape   = (edited.shape == df.shape)
+    same_columns = list(edited.columns) == list(df.columns)
+
+    if same_shape and same_columns:
+        # safe in-place update (no ValueError, no flicker)
+        df.iloc[:, :] = edited.to_numpy()
+    else:
+        # row added/deleted or columns changed → replace the object (allowed here)
+        st.session_state["_risk_df"] = edited.reset_index(drop=True)
 
 # ===== TAB 9: Export =====
 def render_export():
