@@ -1400,7 +1400,7 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     # ===== Risk Assessment =====
     import pandas as _pd
 
-    rdf = st.session_state.get("_risk_df")
+    rdf = st.session_state.get("risk_df")
     if rdf is None:
         rdf = _pd.DataFrame(st.session_state.get("risks", []))
 
@@ -1426,7 +1426,7 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         _repeat_header(hdr)
 
         from docx.shared import Cm
-        widths = (Cm(7.5), Cm(2.8), Cm(2.8), Cm(8.5), Cm(4.0))
+        widths = (Cm(7.5), Cm(3.4), Cm(3.4), Cm(8.0), Cm(4.0))
         for j, w in enumerate(widths):
             for row in rt.rows:
                 row.cells[j].width = w
@@ -1462,7 +1462,6 @@ def view_activity_readonly(a, label, id_to_output, id_to_kpi):
         f"<div class='lf-line'><b>Output:</b> {escape(out_name)}</div>"
         f"<div class='lf-line'><b>Owner:</b> {escape(a.get('owner','') or '—')}</div>"
         f"<div class='lf-line'><b>Start date:</b> {sd} &nbsp;&nbsp;•&nbsp;&nbsp; <b>End date:</b> {ed}</div>"
-        f"<div class='lf-line'><b>Linked KPIs:</b> {escape(kpis_txt)}</div>"
     )
 
     return view_logframe_element(body, kind="activity")
@@ -2322,33 +2321,40 @@ Please complete each section of your project:
                     st.session_state["id_contact_email"] = id_info["contact_email"]
                     st.session_state["id_contact_phone"] = id_info["contact_phone"]
 
-                # ---- Risk Assessment import
+                # ---- Risk Assessment import (Excel → app state)
                 if "Risk Assessment" in xls.sheet_names:
                     try:
                         rdf = pd.read_excel(xls, sheet_name="Risk Assessment", dtype=str).fillna("")
-                        want = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
-                        # allow case/space variations
+                        # normalize headers
                         rdf.columns = [str(c).strip() for c in rdf.columns]
+
+                        want = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
                         missing = [c for c in want if c not in rdf.columns]
                         if not missing:
-                            rows = []
-                            for _, r in rdf.iterrows():
-                                if not any(str(r.get(k, "")).strip() for k in want):
-                                    continue  # skip fully blank
-                                rows.append({
-                                    "Risk": str(r.get("Risk", "")).strip(),
-                                    "Probability": str(r.get("Probability", "")).strip(),
-                                    "Impact": str(r.get("Impact", "")).strip(),
-                                    "Mitigation": str(r.get("Mitigation", "")).strip(),
-                                    "Owner": str(r.get("Owner", "")).strip(),
-                                })
-                            st.session_state["risks"] = rows
-                            import pandas as _pd
-                            st.session_state["_risk_df"] = _pd.DataFrame(
-                                rows, columns=["Risk", "Probability", "Impact", "Mitigation", "Owner"]
-                            )
-                    except Exception as _e:
-                        pass
+                            # map plain levels back to your emoji labels (if your Excel has plain text)
+                            def _to_emoji(val: str) -> str:
+                                s = (val or "").strip().lower()
+                                if s == "low":    return "🟢 Low"
+                                if s == "medium": return "🟡 Medium"
+                                if s == "high":   return "🔴 High"
+                                # already emoji, empty, or anything else → keep as is
+                                return val or ""
+
+                            rdf = rdf.reindex(columns=want).copy()
+                            rdf["Probability"] = rdf["Probability"].map(_to_emoji)
+                            rdf["Impact"] = rdf["Impact"].map(_to_emoji)
+
+                            # keep only meaningful rows (optional; you can skip if you want raw)
+                            # rdf = rdf.dropna(how="all", subset=["Risk","Mitigation","Owner"]).fillna("")
+
+                            # 👇 seed the table for the UI
+                            st.session_state["risk_df"] = rdf
+
+                            # Optional: clear the widget’s last value so it picks up the new seed next render
+                            # (only needed if the table was already open on screen)
+                            st.session_state.pop("risk_editor", None)
+                    except Exception as e:
+                        st.warning(f"Could not import 'Risk Assessment' sheet: {e}")
 
                 # Remember we loaded this file content; prevents re-import on button clicks
                 st.session_state["_resume_file_sig"] = file_sig
@@ -3424,62 +3430,33 @@ def render_disbursement():
 
 # ===== TAB 8: Risk Assessment =====
 def render_risk_assessment():
-    st.header("⚠️ Risk Assessment")
+    import pandas as pd
+    import streamlit as st
 
-    import pandas as _pd
+    PROB = ["", "🟢 Low", "🟡 Medium", "🔴 High"]
+    IMP  = ["", "🟢 Low", "🟡 Medium", "🔴 High"]
 
-    COLS = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
-    PROB  = ["", "Low", "Medium", "High"]
-    IMPCT = ["", "Low", "Medium", "High"]
+    # 👇 seed from Excel-imported DF if available; else empty
+    seed = st.session_state.get("risk_df")
+    if seed is None:
+        seed = pd.DataFrame(columns=["Risk", "Probability", "Impact", "Mitigation", "Owner"])
 
-    # 1) Seed once, with the right columns
-    if "_risk_df" not in st.session_state:
-        st.session_state["_risk_df"] = _pd.DataFrame(st.session_state.get("risks", []), columns=COLS)
+    column_config = {
+        "Probability": st.column_config.SelectboxColumn("Probability", options=PROB, required=False),
+        "Impact":      st.column_config.SelectboxColumn("Impact",      options=IMP,  required=False),
+    }
 
-    df = st.session_state["_risk_df"]          # ← SAME object every rerun
-
-    # Ensure required columns exist (in-place) and drop extras (in-place)
-    for c in COLS:
-        if c not in df.columns:
-            df[c] = ""
-    extra = [c for c in df.columns if c not in COLS]
-    if extra:
-        df.drop(columns=extra, inplace=True)
-
-    # Optional: widen the grid a bit
-    st.markdown("""
-    <style>
-      [data-testid="stDataEditor"] { width: 100% !important; }
-      [data-testid="stDataEditor"] > div { overflow-x: hidden !important; }
-    </style>
-    """, unsafe_allow_html=True)
-
-    edited = st.data_editor(
-        df,                                  # ← pass the SAME object
+    edited_df = st.data_editor(
+        seed,
         num_rows="dynamic",
+        column_config=column_config,
         hide_index=True,
         use_container_width=True,
-        column_order=COLS,
-        column_config={
-            "Risk":        st.column_config.TextColumn(width="large"),
-            "Probability": st.column_config.SelectboxColumn(options=PROB,  width="small"),
-            "Impact":      st.column_config.SelectboxColumn(options=IMPCT, width="small"),
-            "Mitigation":  st.column_config.TextColumn(width="large"),
-            "Owner":       st.column_config.TextColumn(width="medium"),
-        },
         key="risk_editor",
     )
 
-    # 2) Write back WITHOUT changing the object identity when shape is the same
-    same_shape   = (edited.shape == df.shape)
-    same_columns = list(edited.columns) == list(df.columns)
-
-    if same_shape and same_columns:
-        # safe in-place update (no ValueError, no flicker)
-        df.iloc[:, :] = edited.to_numpy()
-    else:
-        # row added/deleted or columns changed → replace the object (allowed here)
-        st.session_state["_risk_df"] = edited.reset_index(drop=True)
+    # persist latest for exports / future renders
+    st.session_state["risk_df"] = edited_df
 
 # ===== TAB 9: Export =====
 def render_export():
@@ -3642,20 +3619,59 @@ def render_export():
 
         # --- Sheet 8: Risk Assessment ---
         import pandas as _pd
-        rdf = st.session_state.get("_risk_df")
-        if rdf is None:
-            rdf = _pd.DataFrame(st.session_state.get("risks", []))
 
-        rdf = rdf.copy()
-        rdf["Probability"] = rdf["Probability"].astype(str).str.strip().str.title()
-        rdf["Impact"] = rdf["Impact"].astype(str).str.strip().str.title()
-        # drop rows that are truly empty (keep rows user is still filling)
-        rdf = rdf.dropna(how="all", subset=["Risk", "Mitigation", "Owner"])
+        risk_df = st.session_state.get("risk_df")
+        if risk_df is None:
+            risk_df = _pd.DataFrame()
 
-        ws_risk = wb.create_sheet("Risk Assessment")
-        ws_risk.append(["Risk", "Probability", "Impact", "Mitigation", "Owner"])
-        for _, r in rdf.fillna("").iterrows():
-            ws_risk.append([r["Risk"], r["Probability"], r["Impact"], r["Mitigation"], r["Owner"]])
+        # ✅ Normalize header names and ensure expected structure
+        want = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
+        rdf = (risk_df.rename(columns=lambda c: str(c).strip())
+               .reindex(columns=want, fill_value="")
+               .fillna("")
+               .copy())
+
+        # ✅ Clean emoji icons for Word readability
+        def _strip_emoji(v: str) -> str:
+            s = str(v or "").strip()
+            return (s.replace("🟢", "").replace("🟡", "").replace("🔴", "")).strip()
+
+        rdf["Probability"] = rdf["Probability"].map(_strip_emoji).str.title()
+        rdf["Impact"] = rdf["Impact"].map(_strip_emoji).str.title()
+
+        # ✅ Skip if no data (prevent empty table crash)
+        if not rdf.empty:
+            _ensure_portrait_section("Risk Assessment")
+
+            rt = doc.add_table(rows=1, cols=5)
+            rt.style = "Table Grid"
+            hdr = rt.rows[0]
+
+            headers = ("Risk", "Probability", "Impact", "Mitigation", "Owner")
+            for j, lab in enumerate(headers):
+                _set_cell_text(hdr.cells[j], lab, bold=True, white=True)
+                _shade(hdr.cells[j], PRIMARY_SHADE)
+            _repeat_header(hdr)
+
+            from docx.shared import Cm
+            widths = (Cm(7.5), Cm(2.8), Cm(2.8), Cm(8.5), Cm(4.0))
+            for j, w in enumerate(widths):
+                for row in rt.rows:
+                    row.cells[j].width = w
+                rt.columns[j].width = w
+
+            for _, r in rdf.iterrows():
+                # Skip rows completely blank
+                if not any([r["Risk"], r["Mitigation"], r["Owner"]]):
+                    continue
+                row = rt.add_row()
+                for j, w in enumerate(widths):
+                    row.cells[j].width = w
+                _set_cell_text(row.cells[0], r["Risk"])
+                _set_cell_text(row.cells[1], r["Probability"])
+                _set_cell_text(row.cells[2], r["Impact"])
+                _set_cell_text(row.cells[3], r["Mitigation"])
+                _set_cell_text(row.cells[4], r["Owner"])
 
         # download
         buf = BytesIO()
