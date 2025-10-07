@@ -841,6 +841,94 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     from io import BytesIO
     from pathlib import Path
 
+    # --- Minimal HTML -> python-docx rendering (for Quill output) ---
+    def _add_runs(par, text, *, bold=False, italic=False, underline=False):
+        if not text:
+            return
+        run = par.add_run(text)
+        run.bold = bool(bold)
+        run.italic = bool(italic)
+        run.underline = bool(underline)
+
+    def _render_inline(par, node, ctx):
+        # node is NavigableString or Tag with inline semantics
+        from bs4 import BeautifulSoup, NavigableString, Tag
+        if isinstance(node, str):
+            _add_runs(par, node, **ctx)
+            return
+        if node.name in ("strong", "b"):
+            ctx2 = {**ctx, "bold": True}
+            for ch in node.children: _render_inline(par, ch, ctx2)
+        elif node.name in ("em", "i"):
+            ctx2 = {**ctx, "italic": True}
+            for ch in node.children: _render_inline(par, ch, ctx2)
+        elif node.name in ("u",):
+            ctx2 = {**ctx, "underline": True}
+            for ch in node.children: _render_inline(par, ch, ctx2)
+        elif node.name == "br":
+            par.add_run("\n")
+        elif node.name == "a":
+            # show link text + (URL)
+            href = node.get("href", "")
+            txt = node.get_text(strip=False)
+            _add_runs(par, txt, **ctx)
+            if href and href != txt:
+                _add_runs(par, f" ({href})", **ctx)
+        else:
+            # generic inline container (span, etc.)
+            for ch in node.children: _render_inline(par, ch, ctx)
+
+    def _render_block(doc, node):
+        # node is a Tag: p/div/ul/ol/li/h1/h2/h3…
+        from bs4 import BeautifulSoup
+        name = (node.name or "").lower()
+
+        if name in ("p", "div"):
+            par = doc.add_paragraph()
+            for ch in node.children:
+                _render_inline(par, ch, {"bold": False, "italic": False, "underline": False})
+
+        elif name in ("ul", "ol"):
+            bullet = (name == "ul")
+            for li in node.find_all("li", recursive=False):
+                style = "List Bullet" if bullet else "List Number"
+                par = doc.add_paragraph(style=style)
+                for ch in li.children:
+                    _render_inline(par, ch, {"bold": False, "italic": False, "underline": False})
+
+        elif name in ("h1", "h2", "h3"):
+            # map HTML headings to Word headings (keep it simple)
+            style = "Heading 2" if name == "h2" else ("Heading 3" if name == "h3" else "Heading 2")
+            par = doc.add_paragraph(style=style)
+            par.add_run(node.get_text(strip=True))
+
+        else:
+            # fallback: create a paragraph with text
+            par = doc.add_paragraph()
+            par.add_run(node.get_text(strip=False))
+
+    def _render_quill_html(doc, html_string: str):
+        """Render a small subset of HTML into the doc (paragraphs, inline styles, lists, links)."""
+        from bs4 import BeautifulSoup
+        html_string = (html_string or "").strip()
+        if not html_string:
+            return
+        soup = BeautifulSoup(html_string, "html.parser")
+        # If the editor returns raw text w/o block tags, wrap as one paragraph
+        top_blocks = [n for n in soup.contents if getattr(n, "name", None) or str(n).strip()]
+        if not any(getattr(n, "name", None) in ("p", "div", "ul", "ol", "h1", "h2", "h3") for n in soup.find_all(True)):
+            par = doc.add_paragraph()
+            par.add_run(soup.get_text(strip=False))
+            return
+        for n in soup.contents:
+            if getattr(n, "name", None):
+                _render_block(doc, n)
+            else:
+                # stray text between blocks -> its own paragraph
+                t = str(n).strip()
+                if t:
+                    doc.add_paragraph(t)
+
     template_path = Path("templates/pdd_template.docx")
     if not template_path.exists():
         st.error(f"Template not found: {template_path}")
@@ -1000,61 +1088,47 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         # Right column: normal
         _set_cell_text(overview_table.cell(row_idx, 1), _s(value))
 
-    # --- Project Detail ---
-    if "Project Detail" in xls.sheet_names:
-        pdf = pd.read_excel(xls, sheet_name="Project Detail", dtype=str).fillna("")
+    # --- Project Detail (headings + rich text from session_state) ---
+    PD = st.session_state.get("project_detail", {}) or {}
 
-        # Expect the top section to have the "Field" / "Value" columns
-        # Find that block (first two named columns)
-        if {"Field", "Value"}.issubset(set(pdf.columns)):
-            fields_df = pdf[["Field", "Value"]].copy()
-        else:
-            # Some writers shift headers to row 0; try forcing the first two columns to these names
-            tmp = pd.read_excel(xls, sheet_name="Project Detail", header=0, dtype=str).fillna("")
-            tmp.columns = [str(c).strip() for c in tmp.columns]
-            fields_df = tmp[["Field", "Value"]].copy()
+    doc.add_page_break()
+    _h1("Project Detail")
 
-        EXPECTED = {
-            "Goal & Expected impact": "goal_impact",
-            "Summary": "summary",
-            "Detailed Description": "detailed_description",
-            "Alignment with National & International Priorities": "alignment",
-            "National Ownership & Sustainability": "ownership_sustainability",
-            "Reporting, Monitoring & Evaluation": "reporting_me",
-            "Communications & Publicity": "comms_publicity",
-        }
+    # Order & labels shown as H2s, each followed by rendered HTML body
+    DETAIL_ORDER = [
+        ("Goal and Expected Impact", "goal_impact"),
+        ("Summary", "summary"),
+        ("Detailed Description", "detailed_description"),
+        ("Alignment with National and International Priorities", "alignment"),
+        ("National Ownership and Sustainability", "ownership_sustainability"),
+        ("Reporting, Monitoring and Evaluation", "reporting_me"),
+        ("Communications and Publicity", "comms_publicity"),
+    ]
 
-        PD = st.session_state.setdefault("project_detail", {})
-        for label, key in EXPECTED.items():
-            match = fields_df.loc[fields_df["Field"].astype(str).str.strip() == label, "Value"]
-            PD[key] = (match.iloc[0] if not match.empty else "").strip()
+    for label, key in DETAIL_ORDER:
+        html_body = (PD.get(key) or "").strip()
+        if not html_body:
+            continue
+        # Heading one level below "Project Detail"
+        doc.add_paragraph(label, style="Heading 2")
+        _render_quill_html(doc, html_body)
 
-        # Roles table: locate the header row with exact names and read everything below it
-        raw_df = pd.read_excel(xls, sheet_name="Project Detail", header=None, dtype=str).fillna("")
-        roles_header = None
-        for i in range(len(raw_df)):
-            r0 = str(raw_df.iat[i, 0]).strip()
-            r1 = str(raw_df.iat[i, 1]).strip()
-            r2 = str(raw_df.iat[i, 2]).strip() if raw_df.shape[1] > 2 else ""
-            if r0 == "Entity" and r1 == "Description" and r2 == "Role & responsibility":
-                roles_header = i
-                break
+    # Roles table under its own H2, if present
+    roles_df = PD.get("roles_table")
+    if roles_df is not None and not roles_df.empty:
+        doc.add_paragraph("Roles & Responsibilities", style="Heading 2")
+        t_roles = doc.add_table(rows=1, cols=3)
+        t_roles.style = "Table Grid"
+        hdr = t_roles.rows[0]
+        for j, lab in enumerate(["Entity", "Description", "Role & responsibility"]):
+            _set_cell_text(hdr.cells[j], lab, bold=True, white=True)
+            _shade(hdr.cells[j], PRIMARY_SHADE)
 
-        import pandas as _pd
-        if roles_header is not None:
-            data_rows = []
-            for r in range(roles_header + 1, len(raw_df)):
-                ent = str(raw_df.iat[r, 0]).strip() if raw_df.shape[1] > 0 else ""
-                desc = str(raw_df.iat[r, 1]).strip() if raw_df.shape[1] > 1 else ""
-                role = str(raw_df.iat[r, 2]).strip() if raw_df.shape[1] > 2 else ""
-                if not any([ent, desc, role]):
-                    break
-                data_rows.append({"Entity": ent, "Description": desc, "Role & responsibility": role})
-            PD["roles_table"] = _pd.DataFrame(
-                data_rows, columns=["Entity", "Description", "Role & responsibility"]
-            )
-        else:
-            PD["roles_table"] = _pd.DataFrame(columns=["Entity", "Description", "Role & responsibility"])
+        for _, r in roles_df.iterrows():
+            row = t_roles.add_row()
+            _set_cell_text(row.cells[0], str(r.get("Entity", "")))
+            _set_cell_text(row.cells[1], str(r.get("Description", "")))
+            _set_cell_text(row.cells[2], str(r.get("Role & responsibility", "")))
 
     # --- Logframe ---
     doc.add_page_break()
@@ -2040,51 +2114,75 @@ Please complete each section of your project:
 
                 # --- Import Project Detail (free text + roles table) ---
                 if "Project Detail" in xls.sheet_names:
-                    pdf = pd.read_excel(xls, sheet_name="Project Detail", header=None).fillna("")
-
                     # Map EXACTLY to the keys the UI/export uses
                     PD_LABELS_INV = {
-                        "Goal & Expected impact": "goal_impact",
+                        "Goal and Expected Impact": "goal_impact",
                         "Summary": "summary",
                         "Detailed Description": "detailed_description",
-                        "Alignment with National & International Priorities": "alignment",
-                        "National Ownership & Sustainability": "ownership_sustainability",
-                        "Reporting, Monitoring & Evaluation": "reporting_me",
-                        "Communications & Publicity": "comms_publicity",
+                        "Alignment with National and International Priorities": "alignment",
+                        "National Ownership and Sustainability": "ownership_sustainability",
+                        "Reporting, Monitoring and Evaluation": "reporting_me",
+                        "Communications and Publicity": "comms_publicity",
                     }
 
                     pd_state = {}
-                    roles_start_idx = None
 
-                    # Read top “Field | Value” pairs until we hit the Roles section
-                    for i in range(len(pdf)):
-                        c0 = str(pdf.iat[i, 0]).strip()
-                        c1 = str(pdf.iat[i, 1]).strip() if pdf.shape[1] > 1 else ""
-                        if c0.lower().startswith("roles & responsibilities"):
-                            roles_start_idx = i
+                    # ---------- 1) Field/Value section ----------
+                    # Prefer headered read; fall back to header=None
+                    tmp = pd.read_excel(xls, sheet_name="Project Detail", dtype=str).fillna("")
+                    tmp.columns = [str(c).strip() for c in tmp.columns]
+
+                    if {"Field", "Value"}.issubset(set(tmp.columns)):
+                        fields_df = tmp.loc[:, ["Field", "Value"]].copy()
+                    else:
+                        tmp2 = pd.read_excel(xls, sheet_name="Project Detail", dtype=str, header=None).fillna("")
+                        # take first two columns as Field/Value
+                        cols2 = min(2, tmp2.shape[1])
+                        fields_df = tmp2.iloc[:, :cols2].copy()
+                        if fields_df.shape[1] == 1:
+                            fields_df["Value"] = ""
+                        fields_df.columns = ["Field", "Value"]
+
+                    fields_df["Field"] = fields_df["Field"].astype(str).str.strip()
+                    fields_df["Value"] = fields_df["Value"].astype(str)
+
+                    for label, key in PD_LABELS_INV.items():
+                        match = fields_df.loc[fields_df["Field"] == label, "Value"]
+                        pd_state[key] = (match.iloc[0] if not match.empty else "").strip()
+
+                    # ---------- 2) Roles & Responsibilities table ----------
+                    raw = pd.read_excel(xls, sheet_name="Project Detail", dtype=str, header=None).fillna("")
+                    roles_header = None
+                    ncols = raw.shape[1]
+
+                    # Find the header row exactly as exported: "Entity" | "Description" | "Role & responsibility"
+                    for i in range(len(raw)):
+                        c0 = str(raw.iat[i, 0]).strip() if ncols > 0 else ""
+                        c1 = str(raw.iat[i, 1]).strip() if ncols > 1 else ""
+                        c2 = str(raw.iat[i, 2]).strip() if ncols > 2 else ""
+                        if c0 == "Entity" and c1 == "Description" and c2 == "Role & responsibility":
+                            roles_header = i
                             break
-                        if not c0 and not c1:
-                            continue
-                        key = PD_LABELS_INV.get(c0)
-                        if key:
-                            pd_state[key] = c1
 
-                    # Convert the Roles table to the DataFrame shape the UI expects
                     import pandas as _pd
-                    roles_df = _pd.DataFrame(columns=["Entity", "Description", "Role & responsibility"])
-                    if roles_start_idx is not None:
-                        header_row = roles_start_idx + 1  # "Entity | Description | Role & responsibility"
-                        table_start = roles_start_idx + 2
-                        for r in range(table_start, len(pdf)):
-                            ent = str(pdf.iat[r, 0]).strip() if pdf.shape[1] > 0 else ""
-                            desc = str(pdf.iat[r, 1]).strip() if pdf.shape[1] > 1 else ""
-                            role = str(pdf.iat[r, 2]).strip() if pdf.shape[1] > 2 else ""
+                    if roles_header is not None:
+                        data_rows = []
+                        for r in range(roles_header + 1, len(raw)):
+                            ent = str(raw.iat[r, 0]).strip() if ncols > 0 else ""
+                            desc = str(raw.iat[r, 1]).strip() if ncols > 1 else ""
+                            role = str(raw.iat[r, 2]).strip() if ncols > 2 else ""
+                            # stop at first fully-empty line (like your exporter writes)
                             if ent == "" and desc == "" and role == "":
                                 break
-                            roles_df.loc[len(roles_df)] = [ent, desc, role]
+                            data_rows.append({"Entity": ent, "Description": desc, "Role & responsibility": role})
+
+                        roles_df = _pd.DataFrame(data_rows, columns=["Entity", "Description", "Role & responsibility"])
+                    else:
+                        roles_df = _pd.DataFrame(columns=["Entity", "Description", "Role & responsibility"])
 
                     pd_state["roles_table"] = roles_df
 
+                    # ---------- 3) Persist to session ----------
                     st.session_state.setdefault("project_detail", {})
                     st.session_state.project_detail.update(pd_state)
 
@@ -2577,10 +2675,10 @@ def render_project_detail():
             toolbar=True,
         )
 
-    # 1) Goal & Expected impact
+    # 1) Goal and Expected Impact
     _rbox(
         "goal_impact",
-        "Goal & Expected impact",
+        "Goal and Expected Impact",
         "Outline the Goal of the project and its expected impact on disease elimination.",
     )
 
@@ -2607,10 +2705,10 @@ def render_project_detail():
         height=220,
     )
 
-    # 4) Alignment with National & International Priorities
+    # 4) Alignment with National and International Priorities
     _rbox(
         "alignment",
-        "Alignment with National & International Priorities",
+        "Alignment with National and International Priorities",
         "Describe alignment with national strategies/policies/action plans and international commitments (e.g., SDGs, WHO roadmaps).",
         height=160,
     )
@@ -2618,23 +2716,23 @@ def render_project_detail():
     # 5) National Ownership & Sustainability
     _rbox(
         "ownership_sustainability",
-        "National Ownership & Sustainability",
+        "National Ownership and Sustainability",
         "Describe local stakeholder engagement/leadership and how benefits/impact will be sustained beyond the grant.",
         height=160,
     )
 
-    # 6) Reporting, Monitoring & Evaluation
+    # 6) Reporting, Monitoring and Evaluation
     _rbox(
         "reporting_me",
-        "Reporting, Monitoring & Evaluation",
+        "Reporting, Monitoring and Evaluation",
         "Outline reporting requirements (frequency/types), expectations for financial reporting, periodic updates, and the final report.",
         height=160,
     )
 
-    # 7) Communications & Publicity
+    # 7) Communications and Publicity
     _rbox(
         "comms_publicity",
-        "Communications & Publicity",
+        "Communications and Publicity",
         "Outline the visibility/communications plan, branding requirements, media engagement, and expected contributions to partners’ visibility, with indicative timelines.",
         height=160,
     )
@@ -3439,13 +3537,13 @@ def render_export():
             val = (pd_state.get(key) or "").strip()
             ws_pd.append([label, val])
 
-        _row("Goal & Expected impact", "goal_impact")
+        _row("Goal and Expected Impact", "goal_impact")
         _row("Summary", "summary")
         _row("Detailed Description", "detailed_description")
-        _row("Alignment with National & International Priorities", "alignment")
-        _row("National Ownership & Sustainability", "ownership_sustainability")
-        _row("Reporting, Monitoring & Evaluation", "reporting_me")
-        _row("Communications & Publicity", "comms_publicity")
+        _row("Alignment with National and International Priorities", "alignment")
+        _row("National Ownership and Sustainability", "ownership_sustainability")
+        _row("Reporting, Monitoring and Evaluation", "reporting_me")
+        _row("Communications and Publicity", "comms_publicity")
 
         # --- Roles & Responsibilities table ---
         import pandas as _pd

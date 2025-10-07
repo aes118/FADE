@@ -7,3 +7,4 @@ matplotlib>=3.8
 requests>=2.31
 streamlit-quill
 html2docx>=1.6
+beautifulsoup4
