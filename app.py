@@ -58,7 +58,7 @@ def generate_id():
 footer_note = "Note: All monetary values are in USD and will be converted to AED in the official project agreement."
 
 # app state
-for key in ["impacts", "outcomes", "outputs", "kpis", "workplan", "budget", "disbursement"]:
+for key in ["impacts", "outcomes", "outputs", "kpis", "workplan", "budget", "disbursement", "risks"]:
     if key not in st.session_state:
         st.session_state[key] = []
 
@@ -529,7 +529,6 @@ def _assumption_items(text: str) -> list:
             items.append(cleaned)
     return items
 
-
 def _assumptions_html(text: str) -> str:
     """HTML block (heading + list) for assumptions."""
     items = _assumption_items(text)
@@ -542,7 +541,6 @@ def _assumptions_html(text: str) -> str:
         f"<ul class='lf-ass-list'>{lis}</ul>"
         "</div>"
     )
-
 
 def _assumptions_doc_text(text: str) -> str:
     """Plain text bullet list (with •) for Word export."""
@@ -650,6 +648,17 @@ def _force_calibri_everywhere(doc, body_size_pt: int = 11):
                     for run in p.runs:
                         run.font.name = "Calibri"
                         # run.font.size = Pt(body_size_pt)  # <-- DON'T
+
+# Risk choices
+RISK_PROB_CHOICES = ["Low", "Medium", "High"]
+RISK_IMPACT_CHOICES = ["Low", "Medium", "High"]
+
+def risks_df() -> pd.DataFrame:
+    cols = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
+    if not st.session_state.get("risks"):
+        return pd.DataFrame(columns=cols)
+    df = pd.DataFrame(st.session_state["risks"])
+    return df.reindex(columns=cols, fill_value="")
 
 def _render_budget_row_editor(rec: dict, rid: str, act_lookup: dict) -> None:
     """Standalone editor card for a single budget row (rid).
@@ -1398,6 +1407,51 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         _set_cell_text(row.cells[2], "")
         _set_cell_text(row.cells[3], "No disbursements defined.")
         _set_cell_text(row.cells[4], "")
+
+    # ===== Risk Assessment =====
+    import pandas as _pd
+
+    rdf = st.session_state.get("_risk_df")
+    if rdf is None:
+        rdf = _pd.DataFrame(st.session_state.get("risks", []))
+
+    # Clean for export only (don’t mutate UI state)
+    rdf = rdf.copy()
+    rdf["Probability"] = rdf["Probability"].astype(str).str.strip().str.title()
+    rdf["Impact"] = rdf["Impact"].astype(str).str.strip().str.title()
+    # keep rows users actually filled; blanks are allowed elsewhere
+    rdf = rdf.dropna(how="all", subset=["Risk", "Mitigation", "Owner"])
+
+    if not rdf.empty:
+        _ensure_portrait_section("Risk Assessment")
+
+        rt = doc.add_table(rows=1, cols=5)
+        rt.style = "Table Grid"
+        rt.alignment = WD_TABLE_ALIGNMENT.LEFT
+        hdr = rt.rows[0]
+
+        headers = ("Risk", "Probability", "Impact", "Mitigation", "Owner")
+        for j, lab in enumerate(headers):
+            _set_cell_text(hdr.cells[j], lab, bold=True, white=True)
+            _shade(hdr.cells[j], PRIMARY_SHADE)
+        _repeat_header(hdr)
+
+        from docx.shared import Cm
+        widths = (Cm(7.5), Cm(2.8), Cm(2.8), Cm(8.5), Cm(4.0))
+        for j, w in enumerate(widths):
+            for row in rt.rows:
+                row.cells[j].width = w
+            rt.columns[j].width = w
+
+        for _, r in rdf.fillna("").iterrows():
+            row = rt.add_row()
+            for j, w in enumerate(widths):
+                row.cells[j].width = w
+            _set_cell_text(row.cells[0], r["Risk"])
+            _set_cell_text(row.cells[1], r["Probability"])
+            _set_cell_text(row.cells[2], r["Impact"])
+            _set_cell_text(row.cells[3], r["Mitigation"])
+            _set_cell_text(row.cells[4], r["Owner"])
 
     # normalize fonts (make sure your helper doesn't reset run sizes)
     _force_calibri_everywhere(doc)
@@ -2278,6 +2332,34 @@ Please complete each section of your project:
                     st.session_state["id_contact_name"] = id_info["contact_name"]
                     st.session_state["id_contact_email"] = id_info["contact_email"]
                     st.session_state["id_contact_phone"] = id_info["contact_phone"]
+
+                # ---- Risk Assessment import
+                if "Risk Assessment" in xls.sheet_names:
+                    try:
+                        rdf = pd.read_excel(xls, sheet_name="Risk Assessment", dtype=str).fillna("")
+                        want = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
+                        # allow case/space variations
+                        rdf.columns = [str(c).strip() for c in rdf.columns]
+                        missing = [c for c in want if c not in rdf.columns]
+                        if not missing:
+                            rows = []
+                            for _, r in rdf.iterrows():
+                                if not any(str(r.get(k, "")).strip() for k in want):
+                                    continue  # skip fully blank
+                                rows.append({
+                                    "Risk": str(r.get("Risk", "")).strip(),
+                                    "Probability": str(r.get("Probability", "")).strip(),
+                                    "Impact": str(r.get("Impact", "")).strip(),
+                                    "Mitigation": str(r.get("Mitigation", "")).strip(),
+                                    "Owner": str(r.get("Owner", "")).strip(),
+                                })
+                            st.session_state["risks"] = rows
+                            import pandas as _pd
+                            st.session_state["_risk_df"] = _pd.DataFrame(
+                                rows, columns=["Risk", "Probability", "Impact", "Mitigation", "Owner"]
+                            )
+                    except Exception as _e:
+                        pass
 
                 # Remember we loaded this file content; prevents re-import on button clicks
                 st.session_state["_resume_file_sig"] = file_sig
@@ -3351,7 +3433,44 @@ def render_disbursement():
                 row["amount_usd"] = float(new_amt)
     st.caption(footer_note)
 
-# ===== TAB 8: Export =====
+# ===== TAB 8: Risk Assessment =====
+def render_risk_assessment():
+    st.header("⚠️ Risk Assessment")
+
+    cols = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
+    PROB_OPTIONS = ["", "Low", "Medium", "High"]   # include blank
+    IMPACT_OPTIONS = ["", "Low", "Medium", "High"] # include blank
+
+    # 1) Seed exactly once (or when importing Excel)
+    if "_risk_df" not in st.session_state:
+        import pandas as _pd
+        base_rows = st.session_state.get("risks", [])
+        st.session_state["_risk_df"] = _pd.DataFrame(base_rows, columns=cols)
+
+    df = st.session_state["_risk_df"]
+
+    # 2) Show editor; DO NOT rebuild/clean the df before passing it in
+    edited = st.data_editor(
+        df,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Risk":        st.column_config.TextColumn(width="large"),
+            "Probability": st.column_config.SelectboxColumn(options=PROB_OPTIONS, width="small", required=False),
+            "Impact":      st.column_config.SelectboxColumn(options=IMPACT_OPTIONS, width="small", required=False),
+            "Mitigation":  st.column_config.TextColumn(width="large"),
+            "Owner":       st.column_config.TextColumn(width="medium"),
+        },
+        key="risk_editor",
+    )
+
+    # 3) Persist the edited DF only to the stable slot; don't clean/filter here
+    st.session_state["_risk_df"] = edited
+    # (Optional) If you want the list mirror, do it *without* cleaning:
+    # st.session_state["risks"] = edited.to_dict(orient="records")
+
+# ===== TAB 9: Export =====
 def render_export():
     st.header("📤 Export Your Application")
 
@@ -3510,6 +3629,23 @@ def render_export():
             r[1].number_format = 'DD/mmm/YYYY'
             r[3].number_format = '#,##0.00'
 
+        # --- Sheet 8: Risk Assessment ---
+        import pandas as _pd
+        rdf = st.session_state.get("_risk_df")
+        if rdf is None:
+            rdf = _pd.DataFrame(st.session_state.get("risks", []))
+
+        rdf = rdf.copy()
+        rdf["Probability"] = rdf["Probability"].astype(str).str.strip().str.title()
+        rdf["Impact"] = rdf["Impact"].astype(str).str.strip().str.title()
+        # drop rows that are truly empty (keep rows user is still filling)
+        rdf = rdf.dropna(how="all", subset=["Risk", "Mitigation", "Owner"])
+
+        ws_risk = wb.create_sheet("Risk Assessment")
+        ws_risk.append(["Risk", "Probability", "Impact", "Mitigation", "Owner"])
+        for _, r in rdf.fillna("").iterrows():
+            ws_risk.append([r["Risk"], r["Probability"], r["Impact"], r["Mitigation"], r["Owner"]])
+
         # download
         buf = BytesIO()
         wb.save(buf)
@@ -3540,13 +3676,14 @@ def render_export():
 
 # ---- Tab registration ----
 reg = TabRegistry()
-reg.register(Tab(key="welcome", label="📘 Welcome & Instructions", render=render_welcome))
+reg.register(Tab(key="welcome", label="📘 Welcome", render=render_welcome))
 reg.register(Tab(key="overview", label="🪪 Project Overview", render=render_overview))
 reg.register(Tab(key="project_detail", label="📋 Project Detail", render=render_project_detail))
 reg.register(Tab(key="logframe", label="🧱 Logframe", render=render_logframe))
 reg.register(Tab(key="workplan", label="🗂️ Workplan", render=render_workplan))
 reg.register(Tab(key="budget", label="💵 Budget", render=render_budget))
 reg.register(Tab(key="disbursement", label="💸 Disbursement Schedule", render=render_disbursement))
+reg.register(Tab(key="risk", label="⚠️ Risk Assessment", render=render_risk_assessment))
 reg.register(Tab(key="export", label="📤 Export", render=render_export))
 
 # ---- Build Streamlit tabs ----
