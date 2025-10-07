@@ -17,6 +17,8 @@ import matplotlib.dates as mdates
 from docx.enum.section import WD_ORIENT, WD_SECTION_START
 from docx.shared import Pt
 from docx.oxml.ns import qn
+from tabs_registry import Tab, TabRegistry
+
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Falcon Awards Project Portal", layout="wide")
@@ -503,6 +505,12 @@ def view_logframe_element(inner_html: str, kind: str = "output") -> str:
     """Wrap inner HTML in a styled card. kind: 'output' | 'kpi' (or others later)."""
     return f"<div class='lf-card lf-card--{kind}'>{inner_html}</div>"
 
+def view_output_header(out: dict, out_nums: dict) -> str:
+    """Return the green Output header card HTML (used in Workplan and possibly other tabs)."""
+    title = escape(out.get("name", "Output"))
+    num = out_nums.get(out.get("id"), "?")
+    header_html = f"<div class='lf-out-header'><strong>Output {num}:</strong> {title}</div>"
+    return view_logframe_element(header_html, kind="output")
 
 def _assumption_items(text: str) -> list:
     """Return cleaned bullet items from a multiline assumptions string."""
@@ -1829,20 +1837,13 @@ def _budget_unpack(row):
         row.get("total_usd"),
         row.get("id"),
     )
-# ---------------- Tabs ----------------
-tabs = st.tabs([
-    "📘 Welcome & Instructions",
-    "🪪 Project Overview",
-    "🧱 Logframe",
-    "🗂️ Workplan",
-    "💵 Budget",
-    "💸 Disbursement Schedule",
-    "📤 Export"
-])
+
 
 # ===== TAB 1: Welcome & Instructions =====
-tabs[0].markdown(
-    """
+def render_welcome():
+    # everything that used to be inside tabs[0] goes here, unchanged:
+    st.markdown(
+        """
 # 📝 Welcome to the Falcon Awards Project Portal
 
 Please complete each section of your project:
@@ -1856,335 +1857,333 @@ Please complete each section of your project:
    - **Create a backup file (Excel):** You can do this at any stage to save your progress and continue working later.
    - **Generate a Project Design Document (Word):** Create a formatted project document to review how your application looks in report form.
    - **Generate a Project Package (ZIP):** At the final stage you will create a password-protected ZIP file for submission to GLIDE. *This feature is planned but not yet available in the portal.*
+"""
+    )  # ← this closes st.markdown() properly
 
-""",
-)
+    definitions = [
+        ("Goal", "The long-term vision (impact)."),
+        ("Outcome", "The specific change expected from the project."),
+        ("Output", "Tangible products/services delivered by the project."),
+        (
+            "Key Performance Indicator (KPI)",
+            "Quantifiable metric to judge performance (with baseline, target, dates, MoV).",
+        ),
+        ("Activity", "Tasks that produce Outputs (scheduled in the Workplan)."),
+        (
+            "Budget line",
+            "A costed item linked to an activity (category, unit, quantity, unit cost). Together, the budget lines under an activity represent the resources required to implement it.",
+        ),
+        ("Assumptions", "External conditions necessary for success."),
+        ("Means of Verification (MoV)", "Where/how the KPI will be measured."),
+        (
+            "Payment-linked indicator",
+            "KPI that triggers funding release when achieved (optional).",
+        ),
+    ]
 
-definitions = [
-    ("Goal", "The long-term vision (impact)."),
-    ("Outcome", "The specific change expected from the project."),
-    ("Output", "Tangible products/services delivered by the project."),
-    (
-        "Key Performance Indicator (KPI)",
-        "Quantifiable metric to judge performance (with baseline, target, dates, MoV).",
-    ),
-    ("Activity", "Tasks that produce Outputs (scheduled in the Workplan)."),
-    (
-        "Budget line",
-        "A costed item linked to an activity (category, unit, quantity, unit cost). Together, the budget lines under an activity represent the resources required to implement it.",
-    ),
-    ("Assumptions", "External conditions necessary for success."),
-    ("Means of Verification (MoV)", "Where/how the KPI will be measured."),
-    (
-        "Payment-linked indicator",
-        "KPI that triggers funding release when achieved (optional).",
-    ),
-]
+    definition_lines = "\n".join(f"- **{term}**: {description}" for term, description in definitions)
+    st.info(f"**Definitions**\n\n{definition_lines}")
 
-definition_lines = "\n".join(f"- **{term}**: {description}" for term, description in definitions)
-tabs[0].info(f"**Definitions**\n\n{definition_lines}")
-# **Contact us**: Anderson E. Stanciole | astanciole@glideae.org
+    # --- Resume from Excel ---
+    uploaded_file = st.file_uploader("Resume Previous Submission (Excel)", type="xlsx")
+    if uploaded_file is not None:
+        try:
+            # Build a stable signature for the uploaded file
+            file_bytes = uploaded_file.getvalue()
+            file_sig = hashlib.md5(file_bytes).hexdigest()
 
-# --- Resume from Excel ---
-uploaded_file = tabs[0].file_uploader("Resume Previous Submission (Excel)", type="xlsx")
-if uploaded_file is not None:
-    try:
-        # Build a stable signature for the uploaded file
-        file_bytes = uploaded_file.getvalue()
-        file_sig = hashlib.md5(file_bytes).hexdigest()
+            # Only (re)load if this is a new file or changed content
+            if st.session_state.get("_resume_file_sig") != file_sig:
+                xls = pd.ExcelFile(BytesIO(file_bytes))
 
-        # Only (re)load if this is a new file or changed content
-        if st.session_state.get("_resume_file_sig") != file_sig:
-            xls = pd.ExcelFile(BytesIO(file_bytes))
+                # ---- RESET state containers
+                st.session_state.impacts = []
+                st.session_state.outcomes = []
+                st.session_state.outputs = []
+                st.session_state.kpis = []
 
-            # ---- RESET state containers
-            st.session_state.impacts = []
-            st.session_state.outcomes = []
-            st.session_state.outputs = []
-            st.session_state.kpis = []
+                # (optional) clear edit flags so they won't point to old IDs
+                for _f in ("edit_goal", "edit_outcome", "edit_output", "edit_kpi"):
+                    st.session_state[_f] = None
 
-            # (optional) clear edit flags so they won't point to old IDs
-            for _f in ("edit_goal", "edit_outcome", "edit_output", "edit_kpi"):
-                st.session_state[_f] = None
+                # ---- Read Summary with explicit IDs ----
+                summary_df = pd.read_excel(xls, sheet_name="Summary")
+                summary_df.columns = [str(c).strip() for c in summary_df.columns]
 
-            # ---- Read Summary with explicit IDs ----
-            summary_df = pd.read_excel(xls, sheet_name="Summary")
-            summary_df.columns = [str(c).strip() for c in summary_df.columns]
+                st.session_state.impacts = []
+                st.session_state.outcomes = []
+                st.session_state.outputs = []
 
-            st.session_state.impacts = []
-            st.session_state.outcomes = []
-            st.session_state.outputs = []
+                for _, row in summary_df.iterrows():
+                    lvl = _s(row.get("RowLevel", ""))
+                    _id = _s(row.get("ID")) or generate_id()
+                    pid = _s(row.get("ParentID")) or None
+                    text = _s(row.get("Text / Title"))
+                    ass = _s(row.get("Assumptions"))
 
-            for _, row in summary_df.iterrows():
-                lvl = _s(row.get("RowLevel", ""))
-                _id = _s(row.get("ID")) or generate_id()
-                pid = _s(row.get("ParentID")) or None
-                text = _s(row.get("Text / Title"))
-                ass = _s(row.get("Assumptions"))
-
-                if lvl.lower() == "goal":
-                    st.session_state.impacts.append({
-                        "id": _id,
-                        "level": "Goal",
-                        "name": text,
-                        "assumptions": ass,
-                    })
-
-                elif lvl.lower() == "outcome":
-                    st.session_state.outcomes.append({
-                        "id": _id,
-                        "level": "Outcome",
-                        "name": text,
-                        "parent_id": pid,
-                        "assumptions": ass,
-                    })
-
-                elif lvl.lower() == "output":
-                    st.session_state.outputs.append({
-                        "id": _id,
-                        "level": "Output",
-                        "name": strip_label_prefix(text, "Output") or "Output",
-                        "parent_id": pid,
-                        "assumptions": ass
-                    })
-
-            # ---- KPI Matrix (ID-based) ----
-            if "KPI Matrix" in xls.sheet_names:
-                kdf = pd.read_excel(xls, sheet_name="KPI Matrix")
-                kdf.columns = [str(c).strip() for c in kdf.columns]
-
-                st.session_state.kpis = []  # reset before loading
-
-                for _, r in kdf.iterrows():
-                    kid = _s(r.get("KPIID")) or generate_id()
-                    plev = _s(r.get("Parent Level") or "Output")
-                    pid = _s(r.get("ParentID")) or None
-
-                    st.session_state.kpis.append({
-                        "id": kid,
-                        "level": "KPI",
-                        "name": _s(r.get("KPI")),
-                        "parent_id": pid,
-                        "parent_level": "Outcome" if plev.lower() == "outcome" else "Output",
-                        "baseline": _s(r.get("Baseline")),
-                        "target": _s(r.get("Target")),
-                        "start_date": parse_date_like(r.get("Start Date")),
-                        "end_date": parse_date_like(r.get("End Date")),
-                        "linked_payment": _s(r.get("Linked to Payment")).lower() in ("yes", "y", "true", "1"),
-                        "mov": _s(r.get("Means of Verification")),
-                    })
-
-            # ---- Workplan (supports both "rich" and "simple" exports)
-            if "Workplan" in xls.sheet_names:
-                wdf = pd.read_excel(xls, sheet_name="Workplan")
-                # normalize headers
-                wdf.columns = [str(c).strip() for c in wdf.columns]
-
-                def _split_csv(s):
-                    return [t.strip() for t in (_s(s).split(",") if _s(s) else []) if t.strip()]
-
-                # lookups
-                outputs_by_name = {(o.get("name") or "").strip(): o["id"] for o in st.session_state.outputs}
-                kpis_by_name = {(k.get("name") or "").strip(): k["id"] for k in st.session_state.kpis}
-                kpi_id_set = set(kpis_by_name.values())
-
-                # detect "rich" vs "simple" format
-                rich = {"Activity ID", "Activity #", "OutputID", "Output", "Activity", "Owner", "Start", "End",
-                        "Linked KPI IDs", "Linked KPIs"}.issubset(set(wdf.columns))
-
-                st.session_state.workplan = []  # reset before loading
-
-                if rich:
-                    output_ids = {o["id"] for o in st.session_state.outputs}
-                    kpi_ids = {k["id"] for k in st.session_state.kpis}
-
-
-                    def _csv_ids(s):
-                        vals = [t.strip() for t in (_s(s).split(",") if _s(s) else []) if t.strip()]
-                        return vals
-
-
-                    for _, row in wdf.iterrows():
-                        act_id = _s(row.get("Activity ID")) or generate_id()
-                        out_id = _s(row.get("OutputID"))
-                        if not out_id:
-                            out_name = _s(row.get("Output"))
-                            out_id = next((o["id"] for o in st.session_state.outputs if
-                                           (o.get("name") or "").strip() == out_name), None)
-
-                        linked_kpi_ids = [kid for kid in _csv_ids(row.get("Linked KPI IDs")) if kid in kpi_ids]
-                        dep_ids = _csv_ids(row.get("Dependencies"))
-
-                        st.session_state.workplan.append({
-                            "id": act_id,
-                            "output_id": out_id if out_id in output_ids else None,
-                            "name": _s(row.get("Activity")),
-                            "owner": _s(row.get("Owner")),
-                            "start": parse_date_like(row.get("Start")),
-                            "end": parse_date_like(row.get("End"))
+                    if lvl.lower() == "goal":
+                        st.session_state.impacts.append({
+                            "id": _id,
+                            "level": "Goal",
+                            "name": text,
+                            "assumptions": ass,
                         })
 
-                else:
-                    # SIMPLE legacy format: Activity | Owner | Start Date | End Date | Milestone
-                    # No Output/KPI info in this shape; if there is exactly one Output, attach to it.
-                    only_output_id = st.session_state.outputs[0]["id"] if len(st.session_state.outputs) == 1 else None
-                    for _, row in wdf.iterrows():
-                        st.session_state.workplan.append({
-                            "id": generate_id(),
-                            "output_id": only_output_id,  # None if multiple outputs; user can reassign in UI
-                            "name": _s(row.get("Activity")),
-                            "owner": _s(row.get("Owner")),
-                            "start": parse_date_like(row.get("Start Date")),
-                            "end": parse_date_like(row.get("End Date")),
-                            "kpi_ids": [],
+                    elif lvl.lower() == "outcome":
+                        st.session_state.outcomes.append({
+                            "id": _id,
+                            "level": "Outcome",
+                            "name": text,
+                            "parent_id": pid,
+                            "assumptions": ass,
                         })
 
-            # ---- Budget import (supports new detailed schema + legacy fallback)
-            if "Budget" in xls.sheet_names:
-                bdf = pd.read_excel(xls, sheet_name="Budget")
-                bdf.columns = [str(c).strip() for c in bdf.columns]
-                st.session_state.budget = []
-
-                # helper: map activity label back to id
-                # (recompute numbers after import of workplan if needed)
-                _, _, act_nums = compute_numbers(include_activities=True)
-                act_lookup = activity_label_map(act_nums)
-                label_to_act_id = {v: k for k, v in act_lookup.items()}
-
-                cols = set(bdf.columns)
-
-                # New detailed format
-                if {"Budget Line Item", "Cost Category", "Sub Category", "Unit",
-                    "Unit Cost (USD)", "Quantity", "Total Cost (USD)"}.issubset(cols):
-
-                    for _, r in bdf.iterrows():
-                        line_item = _s(r.get("Budget Line Item"))
-                        cat = _s(r.get("Cost Category"))
-                        subcat = _s(r.get("Sub Category"))
-                        unit = _s(r.get("Unit"))
-                        uc = float(r.get("Unit Cost (USD)") or 0.0)
-                        qty = float(r.get("Quantity") or 0.0)
-                        tot = float(r.get("Total Cost (USD)") or (uc * qty) or 0.0)
-
-                        # Try to recover activity_id from the label (export stores label)
-                        act_label = _s(r.get("Linked Activity"))
-                        activity_id = label_to_act_id.get(act_label) if act_label else None
-
-                        st.session_state.budget.append({
-                            "id": generate_id(),
-                            "activity_id": activity_id,
-                            "item": line_item,
-                            "category": cat,
-                            "subcategory": subcat,
-                            "unit": unit,
-                            "unit_cost": uc,
-                            "qty": qty,
-                            "currency": "USD",
-                            "total_usd": tot,
+                    elif lvl.lower() == "output":
+                        st.session_state.outputs.append({
+                            "id": _id,
+                            "level": "Output",
+                            "name": strip_label_prefix(text, "Output") or "Output",
+                            "parent_id": pid,
+                            "assumptions": ass
                         })
 
-                # Legacy simple format (3 columns)
-                elif {"Budget item", "Description", "Total Cost (USD)"}.issubset(cols):
-                    for _, r in bdf.iterrows():
-                        item = _s(r.get("Budget item"))
-                        desc = _s(r.get("Description"))
-                        tot = float(r.get("Total Cost (USD)") or 0.0)
-                        if item or desc or tot:
-                            # map legacy to new structure (simple best-effort)
-                            st.session_state.budget.append({
-                                "id": generate_id(),
-                                "activity_id": None,
-                                "item": item or desc or "Budget line",
-                                "category": "Professional Services",
-                                "subcategory": "Consultancy / Advisory Services",
-                                "unit": "lump sum",
-                                "unit_cost": float(tot),
-                                "qty": 1.0,
-                                "currency": "USD",
-                                "total_usd": float(tot),
+                # ---- KPI Matrix (ID-based) ----
+                if "KPI Matrix" in xls.sheet_names:
+                    kdf = pd.read_excel(xls, sheet_name="KPI Matrix")
+                    kdf.columns = [str(c).strip() for c in kdf.columns]
+
+                    st.session_state.kpis = []  # reset before loading
+
+                    for _, r in kdf.iterrows():
+                        kid = _s(r.get("KPIID")) or generate_id()
+                        plev = _s(r.get("Parent Level") or "Output")
+                        pid = _s(r.get("ParentID")) or None
+
+                        st.session_state.kpis.append({
+                            "id": kid,
+                            "level": "KPI",
+                            "name": _s(r.get("KPI")),
+                            "parent_id": pid,
+                            "parent_level": "Outcome" if plev.lower() == "outcome" else "Output",
+                            "baseline": _s(r.get("Baseline")),
+                            "target": _s(r.get("Target")),
+                            "start_date": parse_date_like(r.get("Start Date")),
+                            "end_date": parse_date_like(r.get("End Date")),
+                            "linked_payment": _s(r.get("Linked to Payment")).lower() in ("yes", "y", "true", "1"),
+                            "mov": _s(r.get("Means of Verification")),
+                        })
+
+                # ---- Workplan (supports both "rich" and "simple" exports)
+                if "Workplan" in xls.sheet_names:
+                    wdf = pd.read_excel(xls, sheet_name="Workplan")
+                    # normalize headers
+                    wdf.columns = [str(c).strip() for c in wdf.columns]
+
+                    def _split_csv(s):
+                        return [t.strip() for t in (_s(s).split(",") if _s(s) else []) if t.strip()]
+
+                    # lookups
+                    outputs_by_name = {(o.get("name") or "").strip(): o["id"] for o in st.session_state.outputs}
+                    kpis_by_name = {(k.get("name") or "").strip(): k["id"] for k in st.session_state.kpis}
+                    kpi_id_set = set(kpis_by_name.values())
+
+                    # detect "rich" vs "simple" format
+                    rich = {"Activity ID", "Activity #", "OutputID", "Output", "Activity", "Owner", "Start", "End",
+                            "Linked KPI IDs", "Linked KPIs"}.issubset(set(wdf.columns))
+
+                    st.session_state.workplan = []  # reset before loading
+
+                    if rich:
+                        output_ids = {o["id"] for o in st.session_state.outputs}
+                        kpi_ids = {k["id"] for k in st.session_state.kpis}
+
+
+                        def _csv_ids(s):
+                            vals = [t.strip() for t in (_s(s).split(",") if _s(s) else []) if t.strip()]
+                            return vals
+
+
+                        for _, row in wdf.iterrows():
+                            act_id = _s(row.get("Activity ID")) or generate_id()
+                            out_id = _s(row.get("OutputID"))
+                            if not out_id:
+                                out_name = _s(row.get("Output"))
+                                out_id = next((o["id"] for o in st.session_state.outputs if
+                                               (o.get("name") or "").strip() == out_name), None)
+
+                            linked_kpi_ids = [kid for kid in _csv_ids(row.get("Linked KPI IDs")) if kid in kpi_ids]
+                            dep_ids = _csv_ids(row.get("Dependencies"))
+
+                            st.session_state.workplan.append({
+                                "id": act_id,
+                                "output_id": out_id if out_id in output_ids else None,
+                                "name": _s(row.get("Activity")),
+                                "owner": _s(row.get("Owner")),
+                                "start": parse_date_like(row.get("Start")),
+                                "end": parse_date_like(row.get("End"))
                             })
 
-            # ---- Disbursement Schedule import (optional sheet)
-            if "Disbursement Schedule" in xls.sheet_names:
-                ddf = pd.read_excel(xls, sheet_name="Disbursement Schedule")
-                ddf.columns = [str(c).strip() for c in ddf.columns]
+                    else:
+                        # SIMPLE legacy format: Activity | Owner | Start Date | End Date | Milestone
+                        # No Output/KPI info in this shape; if there is exactly one Output, attach to it.
+                        only_output_id = st.session_state.outputs[0]["id"] if len(st.session_state.outputs) == 1 else None
+                        for _, row in wdf.iterrows():
+                            st.session_state.workplan.append({
+                                "id": generate_id(),
+                                "output_id": only_output_id,  # None if multiple outputs; user can reassign in UI
+                                "name": _s(row.get("Activity")),
+                                "owner": _s(row.get("Owner")),
+                                "start": parse_date_like(row.get("Start Date")),
+                                "end": parse_date_like(row.get("End Date")),
+                                "kpi_ids": [],
+                            })
 
-                st.session_state.disbursement = []
+                # ---- Budget import (supports new detailed schema + legacy fallback)
+                if "Budget" in xls.sheet_names:
+                    bdf = pd.read_excel(xls, sheet_name="Budget")
+                    bdf.columns = [str(c).strip() for c in bdf.columns]
+                    st.session_state.budget = []
 
-                k_by_id = {k["id"]: k for k in st.session_state.kpis}
+                    # helper: map activity label back to id
+                    # (recompute numbers after import of workplan if needed)
+                    _, _, act_nums = compute_numbers(include_activities=True)
+                    act_lookup = activity_label_map(act_nums)
+                    label_to_act_id = {v: k for k, v in act_lookup.items()}
 
-                for _, row in ddf.iterrows():
-                    kid = _s(row.get("KPIID"))
-                    k = k_by_id.get(kid)
+                    cols = set(bdf.columns)
 
-                    st.session_state.disbursement.append({
-                        "kpi_id": kid,
-                        "output_id": (k.get("parent_id") if k else None),
-                        "kpi_name": (k.get("name") if k else ""),
-                        "anticipated_date": parse_date_like(row.get("Anticipated deliverable date")),
-                        "deliverable": _s(row.get("Deliverable")),
-                        "amount_usd": float(row.get(
-                            "Maximum Grant instalment payable on satisfaction of this deliverable (USD)") or 0.0),
+                    # New detailed format
+                    if {"Budget Line Item", "Cost Category", "Sub Category", "Unit",
+                        "Unit Cost (USD)", "Quantity", "Total Cost (USD)"}.issubset(cols):
+
+                        for _, r in bdf.iterrows():
+                            line_item = _s(r.get("Budget Line Item"))
+                            cat = _s(r.get("Cost Category"))
+                            subcat = _s(r.get("Sub Category"))
+                            unit = _s(r.get("Unit"))
+                            uc = float(r.get("Unit Cost (USD)") or 0.0)
+                            qty = float(r.get("Quantity") or 0.0)
+                            tot = float(r.get("Total Cost (USD)") or (uc * qty) or 0.0)
+
+                            # Try to recover activity_id from the label (export stores label)
+                            act_label = _s(r.get("Linked Activity"))
+                            activity_id = label_to_act_id.get(act_label) if act_label else None
+
+                            st.session_state.budget.append({
+                                "id": generate_id(),
+                                "activity_id": activity_id,
+                                "item": line_item,
+                                "category": cat,
+                                "subcategory": subcat,
+                                "unit": unit,
+                                "unit_cost": uc,
+                                "qty": qty,
+                                "currency": "USD",
+                                "total_usd": tot,
+                            })
+
+                    # Legacy simple format (3 columns)
+                    elif {"Budget item", "Description", "Total Cost (USD)"}.issubset(cols):
+                        for _, r in bdf.iterrows():
+                            item = _s(r.get("Budget item"))
+                            desc = _s(r.get("Description"))
+                            tot = float(r.get("Total Cost (USD)") or 0.0)
+                            if item or desc or tot:
+                                # map legacy to new structure (simple best-effort)
+                                st.session_state.budget.append({
+                                    "id": generate_id(),
+                                    "activity_id": None,
+                                    "item": item or desc or "Budget line",
+                                    "category": "Professional Services",
+                                    "subcategory": "Consultancy / Advisory Services",
+                                    "unit": "lump sum",
+                                    "unit_cost": float(tot),
+                                    "qty": 1.0,
+                                    "currency": "USD",
+                                    "total_usd": float(tot),
+                                })
+
+                # ---- Disbursement Schedule import (optional sheet)
+                if "Disbursement Schedule" in xls.sheet_names:
+                    ddf = pd.read_excel(xls, sheet_name="Disbursement Schedule")
+                    ddf.columns = [str(c).strip() for c in ddf.columns]
+
+                    st.session_state.disbursement = []
+
+                    k_by_id = {k["id"]: k for k in st.session_state.kpis}
+
+                    for _, row in ddf.iterrows():
+                        kid = _s(row.get("KPIID"))
+                        k = k_by_id.get(kid)
+
+                        st.session_state.disbursement.append({
+                            "kpi_id": kid,
+                            "output_id": (k.get("parent_id") if k else None),
+                            "kpi_name": (k.get("name") if k else ""),
+                            "anticipated_date": parse_date_like(row.get("Anticipated deliverable date")),
+                            "deliverable": _s(row.get("Deliverable")),
+                            "amount_usd": float(row.get(
+                                "Maximum Grant instalment payable on satisfaction of this deliverable (USD)") or 0.0),
+                        })
+
+                # --- Import Project Overview sheet (if present) and update Project Overview state ---
+                if "Project Overview" in xls.sheet_names:
+                    id_df = pd.read_excel(xls, sheet_name="Project Overview")
+                    try:
+                        kv = {
+                            str(r["Field"]).strip(): (
+                                "" if (pd.isna(r["Value"])) else str(r["Value"])
+                            )
+                            for _, r in id_df.iterrows()
+                        }
+                    except Exception:
+                        kv = {}
+
+
+                    def _g(field_label: str) -> str:
+                        return (kv.get(field_label, "") or "").strip()
+
+                    id_info = st.session_state.get("id_info", {}) or {}
+                    id_info.update({
+                        "title": _g(LABELS["title"]),
+                        "pi_name": _g(LABELS["pi_name"]),
+                        "pi_email": _g(LABELS["pi_email"]),
+                        "implementing_partners": _g(LABELS["implementing_partners"]),
+                        "supporting_partners": _g(LABELS["supporting_partners"]),
+                        "start_date": parse_date_like(kv.get(LABELS["start_date"], "")) or None,
+                        "end_date": parse_date_like(kv.get(LABELS["end_date"], "")) or None,
+                        "location": _g(LABELS["location"]),
+                        "contact_name": _g(LABELS["contact_name"]),
+                        "contact_email": _g(LABELS["contact_email"]),
+                        "contact_phone": _g(LABELS["contact_phone"]),
                     })
 
-            # --- Import Project Overview sheet (if present) and update Project Overview state ---
-            if "Project Overview" in xls.sheet_names:
-                id_df = pd.read_excel(xls, sheet_name="Project Overview")
-                try:
-                    kv = {
-                        str(r["Field"]).strip(): (
-                            "" if (pd.isna(r["Value"])) else str(r["Value"])
-                        )
-                        for _, r in id_df.iterrows()
-                    }
-                except Exception:
-                    kv = {}
+                    st.session_state.id_info = id_info
 
+                    # prime live widget values so inputs show imported data immediately
+                    st.session_state["id_title"] = id_info["title"]
+                    st.session_state["id_pi_name"] = id_info["pi_name"]
+                    st.session_state["id_pi_email"] = id_info["pi_email"]
+                    st.session_state["id_implementing_partners"] = id_info["implementing_partners"]
+                    st.session_state["id_supporting_partners"] = id_info["supporting_partners"]
+                    st.session_state["id_start_date"] = id_info["start_date"]
+                    st.session_state["id_end_date"] = id_info["end_date"]
+                    st.session_state["id_location"] = id_info["location"]
+                    st.session_state["id_contact_name"] = id_info["contact_name"]
+                    st.session_state["id_contact_email"] = id_info["contact_email"]
+                    st.session_state["id_contact_phone"] = id_info["contact_phone"]
 
-                def _g(field_label: str) -> str:
-                    return (kv.get(field_label, "") or "").strip()
+                # Remember we loaded this file content; prevents re-import on button clicks
+                st.session_state["_resume_file_sig"] = file_sig
+                st.success("✅ Previous submission loaded into session.")
+                st.rerun()
 
-                id_info = st.session_state.get("id_info", {}) or {}
-                id_info.update({
-                    "title": _g(LABELS["title"]),
-                    "pi_name": _g(LABELS["pi_name"]),
-                    "pi_email": _g(LABELS["pi_email"]),
-                    "implementing_partners": _g(LABELS["implementing_partners"]),
-                    "supporting_partners": _g(LABELS["supporting_partners"]),
-                    "start_date": parse_date_like(kv.get(LABELS["start_date"], "")) or None,
-                    "end_date": parse_date_like(kv.get(LABELS["end_date"], "")) or None,
-                    "location": _g(LABELS["location"]),
-                    "contact_name": _g(LABELS["contact_name"]),
-                    "contact_email": _g(LABELS["contact_email"]),
-                    "contact_phone": _g(LABELS["contact_phone"]),
-                })
-
-                st.session_state.id_info = id_info
-
-                # prime live widget values so inputs show imported data immediately
-                st.session_state["id_title"] = id_info["title"]
-                st.session_state["id_pi_name"] = id_info["pi_name"]
-                st.session_state["id_pi_email"] = id_info["pi_email"]
-                st.session_state["id_implementing_partners"] = id_info["implementing_partners"]
-                st.session_state["id_supporting_partners"] = id_info["supporting_partners"]
-                st.session_state["id_start_date"] = id_info["start_date"]
-                st.session_state["id_end_date"] = id_info["end_date"]
-                st.session_state["id_location"] = id_info["location"]
-                st.session_state["id_contact_name"] = id_info["contact_name"]
-                st.session_state["id_contact_email"] = id_info["contact_email"]
-                st.session_state["id_contact_phone"] = id_info["contact_phone"]
-
-            # Remember we loaded this file content; prevents re-import on button clicks
-            st.session_state["_resume_file_sig"] = file_sig
-            tabs[0].success("✅ Previous submission loaded into session.")
-            st.rerun()
-
-        # else: same file uploaded again → skip re-import so edit/delete works
-    except Exception as e:
-        tabs[0].error(f"Could not parse uploaded Excel: {e}")
+            # else: same file uploaded again → skip re-import so edit/delete works
+        except Exception as e:
+            st.error(f"Could not parse uploaded Excel: {e}")
 
 # ===== TAB 2: Project Overview =====
-with tabs[1]:
+def render_overview():
     st.header("🪪 Project Overview")
 
     # defaults
@@ -2403,72 +2402,121 @@ with tabs[1]:
         for w in warnings:
             st.warning(w)
 
-
 # ===== TAB 3: Logframe =====
-tabs[2].header("📊 Build Your Logframe")
-inject_logframe_css()
-# --- numbering for labels shown in UI and preview ---
-out_nums, kpi_nums = compute_numbers()   # outputs -> 'n', KPIs -> 'n.p'
+def render_logframe():
+    st.header("🧱 Logframe")
+    inject_logframe_css()
+    # --- numbering for labels shown in UI and preview ---
+    out_nums, kpi_nums = compute_numbers()   # outputs -> 'n', KPIs -> 'n.p'
 
-# --- Add forms ---
-with tabs[2].expander("➕ Add Goal"):
-    if len(st.session_state.impacts) >= 1:
-        st.info("Only one Goal is allowed. Edit the existing Goal in the preview below.")
-    else:
-        with st.form("goal_form"):
-            goal_text = st.text_area("Goal (single, high-level statement)")
-            goal_assumptions = st.text_area("Key Assumptions (optional)")
-            if st.form_submit_button("Add Goal") and goal_text.strip():
-                st.session_state.impacts.append({
-                    "id": generate_id(),
-                    "level": "Goal",
-                    "name": goal_text.strip(),
-                    "assumptions": goal_assumptions.strip(),
-                })
-
-with tabs[2].expander("➕ Add Outcome"):
-    if not st.session_state.impacts:
-        st.warning("Add the Goal first.")
-    elif len(st.session_state.outcomes) >= 1:
-        st.info("Only one Outcome is allowed. Edit the existing Outcome in the preview below.")
-    else:
-        with st.form("outcome_form"):
-            outcome_text = st.text_area("Outcome (statement)")
-            # since there is only one goal, no need to pick it; link to the single goal
-            linked_goal_id = st.session_state.impacts[0]["id"]
-            if st.form_submit_button("Add Outcome") and outcome_text.strip():
-                st.session_state.outcomes.append(
-                    {"id": generate_id(), "level": "Outcome", "name": outcome_text.strip(), "parent_id": linked_goal_id}
-                )
-
-# --- Add ONE Outcome-level KPI ---
-with tabs[2].expander("➕ Add Outcome KPI (one per outcome)"):
-    if not st.session_state.outcomes:
-        tabs[2].warning("Add the Outcome first.")
-    else:
-        outcome = st.session_state.outcomes[0]   # single-outcome design
-        existing_outcome_kpis = [
-            k for k in st.session_state.kpis
-            if k.get("parent_level") == "Outcome" and k.get("parent_id") == outcome["id"]
-        ]
-
-        if existing_outcome_kpis:
-            st.info("This outcome already has a KPI. Edit it below in the preview.")
+    # --- Add forms ---
+    with st.expander("➕ Add Goal"):
+        if len(st.session_state.impacts) >= 1:
+            st.info("Only one Goal is allowed. Edit the existing Goal in the preview below.")
         else:
-            with st.form("kpi_outcome_form"):
-                kpi_text = st.text_area("Outcome KPI*")
+            with st.form("goal_form"):
+                goal_text = st.text_area("Goal (single, high-level statement)")
+                goal_assumptions = st.text_area("Key Assumptions (optional)")
+                if st.form_submit_button("Add Goal") and goal_text.strip():
+                    st.session_state.impacts.append({
+                        "id": generate_id(),
+                        "level": "Goal",
+                        "name": goal_text.strip(),
+                        "assumptions": goal_assumptions.strip(),
+                    })
+
+    with st.expander("➕ Add Outcome"):
+        if not st.session_state.impacts:
+            st.warning("Add the Goal first.")
+        elif len(st.session_state.outcomes) >= 1:
+            st.info("Only one Outcome is allowed. Edit the existing Outcome in the preview below.")
+        else:
+            with st.form("outcome_form"):
+                outcome_text = st.text_area("Outcome (statement)")
+                # since there is only one goal, no need to pick it; link to the single goal
+                linked_goal_id = st.session_state.impacts[0]["id"]
+                if st.form_submit_button("Add Outcome") and outcome_text.strip():
+                    st.session_state.outcomes.append(
+                        {"id": generate_id(), "level": "Outcome", "name": outcome_text.strip(), "parent_id": linked_goal_id}
+                    )
+
+    # --- Add ONE Outcome-level KPI ---
+    with st.expander("➕ Add Outcome KPI (one per outcome)"):
+        if not st.session_state.outcomes:
+            st.warning("Add the Outcome first.")
+        else:
+            outcome = st.session_state.outcomes[0]   # single-outcome design
+            existing_outcome_kpis = [
+                k for k in st.session_state.kpis
+                if k.get("parent_level") == "Outcome" and k.get("parent_id") == outcome["id"]
+            ]
+
+            if existing_outcome_kpis:
+                st.info("This outcome already has a KPI. Edit it below in the preview.")
+            else:
+                with st.form("kpi_outcome_form"):
+                    kpi_text = st.text_area("Outcome KPI*")
+                    baseline = st.text_input("Baseline")
+                    target   = st.text_input("Target")
+                    payment_linked = st.checkbox("Linked to Payment (optional)")
+                    mov = st.text_area("Means of Verification")
+
+                    if st.form_submit_button("Add Outcome KPI") and kpi_text.strip():
+                        st.session_state.kpis.append({
+                            "id": generate_id(),
+                            "level": "KPI",
+                            "name": strip_label_prefix(kpi_text.strip(), "KPI"),
+                            "parent_id": outcome["id"],
+                            "parent_level": "Outcome",   # <<< key difference
+                            "baseline": baseline.strip(),
+                            "target": target.strip(),
+                            "linked_payment": bool(payment_linked),
+                            "mov": mov.strip(),
+                        })
+                        st.rerun()
+
+    with st.expander("➕ Add Output"):
+        if not st.session_state.outcomes:
+            st.warning("Add the Outcome first.")
+        else:
+            with st.form("output_form"):
+                output_title = st.text_input("Output title (e.g., 'Output 1')")
+                output_assumptions = st.text_area("Key Assumptions (optional)")
+                if st.form_submit_button("Add Output") and output_title.strip():
+                    linked_outcome_id = st.session_state.outcomes[0]["id"]
+                    st.session_state.outputs.append(
+                        {
+                            "id": generate_id(),
+                            "level": "Output",
+                            "name": output_title.strip(),
+                            "parent_id": linked_outcome_id,
+                            "assumptions": output_assumptions.strip(),
+                        }
+                    )
+
+    with st.expander("➕ Add KPI"):
+        if not st.session_state.outputs:
+            st.warning("Add an Output first.")
+        else:
+            with st.form("kpi_form"):
+                parent = st.selectbox(
+                    "Parent Output",
+                    st.session_state.outputs,
+                    format_func=lambda o: f"Output {out_nums.get(o['id'],'?')} — {o.get('name','Output')}"
+                )
+                kpi_text = st.text_area("KPI*")
                 baseline = st.text_input("Baseline")
                 target   = st.text_input("Target")
                 payment_linked = st.checkbox("Linked to Payment (optional)")
                 mov = st.text_area("Means of Verification")
 
-                if st.form_submit_button("Add Outcome KPI") and kpi_text.strip():
+                if st.form_submit_button("Add KPI") and kpi_text.strip():
                     st.session_state.kpis.append({
                         "id": generate_id(),
                         "level": "KPI",
                         "name": strip_label_prefix(kpi_text.strip(), "KPI"),
-                        "parent_id": outcome["id"],
-                        "parent_level": "Outcome",   # <<< key difference
+                        "parent_id": parent["id"],
+                        "parent_level": "Output",   # <-- fixed
                         "baseline": baseline.strip(),
                         "target": target.strip(),
                         "linked_payment": bool(payment_linked),
@@ -2476,165 +2524,109 @@ with tabs[2].expander("➕ Add Outcome KPI (one per outcome)"):
                     })
                     st.rerun()
 
-with tabs[2].expander("➕ Add Output"):
-    if not st.session_state.outcomes:
-        tabs[2].warning("Add the Outcome first.")
-    else:
-        with st.form("output_form"):
-            output_title = st.text_input("Output title (e.g., 'Output 1')")
-            output_assumptions = st.text_area("Key Assumptions (optional)")
-            if st.form_submit_button("Add Output") and output_title.strip():
-                linked_outcome_id = st.session_state.outcomes[0]["id"]
-                st.session_state.outputs.append(
-                    {
-                        "id": generate_id(),
-                        "level": "Output",
-                        "name": output_title.strip(),
-                        "parent_id": linked_outcome_id,
-                        "assumptions": output_assumptions.strip(),
-                    }
-                )
+    # ---- View helpers (card layout, compact-aware) ----
+    def view_goal(g):
+        title = escape(g.get("name", ""))
+        header_html = f"<div class='lf-goal-header'><strong>Goal:</strong> {title}</div>"
+        ass_html = _assumptions_html(g.get("assumptions"))
+        return view_logframe_element(header_html + ass_html, kind="goal")
 
-with tabs[2].expander("➕ Add KPI"):
-    if not st.session_state.outputs:
-        tabs[2].warning("Add an Output first.")
-    else:
-        with st.form("kpi_form"):
-            parent = st.selectbox(
-                "Parent Output",
-                st.session_state.outputs,
-                format_func=lambda o: f"Output {out_nums.get(o['id'],'?')} — {o.get('name','Output')}"
-            )
-            kpi_text = st.text_area("KPI*")
-            baseline = st.text_input("Baseline")
-            target   = st.text_input("Target")
-            payment_linked = st.checkbox("Linked to Payment (optional)")
-            mov = st.text_area("Means of Verification")
+    def view_outcome(o):
+        return f"##### 🟪 **Outcome:** {o.get('name','')}"
 
-            if st.form_submit_button("Add KPI") and kpi_text.strip():
-                st.session_state.kpis.append({
-                    "id": generate_id(),
-                    "level": "KPI",
-                    "name": strip_label_prefix(kpi_text.strip(), "KPI"),
-                    "parent_id": parent["id"],
-                    "parent_level": "Output",   # <-- fixed
-                    "baseline": baseline.strip(),
-                    "target": target.strip(),
-                    "linked_payment": bool(payment_linked),
-                    "mov": mov.strip(),
-                })
-                st.rerun()
+    def view_output(out):
+        num   = out_nums.get(out["id"], "?")
+        title = out.get("name", "Output")
 
-# ---- View helpers (card layout, compact-aware) ----
-def view_goal(g):
-    title = escape(g.get("name", ""))
-    header_html = f"<div class='lf-goal-header'><strong>Goal:</strong> {title}</div>"
-    ass_html = _assumptions_html(g.get("assumptions"))
-    return view_logframe_element(header_html + ass_html, kind="goal")
+        # header line (keeps your green card style via view_logframe_element)
+        header_html = (
+            f"<div class='lf-out-header'><strong>Output {num}:</strong> {title}</div>"
+        )
 
-def view_outcome(o):
-    return f"##### 🟪 **Outcome:** {o.get('name','')}"
+        # assumptions -> bullet list (one bullet per line the user typed)
+        ass_html = _assumptions_html(out.get("assumptions"))
 
-def view_output(out):
-    num   = out_nums.get(out["id"], "?")
-    title = out.get("name", "Output")
+        # wrap in the green card
+        return view_logframe_element(header_html + ass_html, kind="output")
 
-    # header line (keeps your green card style via view_logframe_element)
-    header_html = (
-        f"<div class='lf-out-header'><strong>Output {num}:</strong> {title}</div>"
-    )
+    def view_kpi(k):
+        # decide label prefix based on level
+        is_outcome = (k.get("parent_level") == "Outcome")
+        num  = kpi_nums.get(k["id"], "?") if not is_outcome else ""  # no numbering for outcome-level
+        name = k.get("name", "")
 
-    # assumptions -> bullet list (one bullet per line the user typed)
-    ass_html = _assumptions_html(out.get("assumptions"))
+        bp  = (k.get("baseline") or "").strip()
+        tg  = (k.get("target") or "").strip()
+        mov = (k.get("mov") or "").strip()
 
-    # wrap in the green card
-    return view_logframe_element(header_html + ass_html, kind="output")
+        chip = (
+            "<span class='chip green'>Payment-linked</span>"
+            if k.get("linked_payment")
+            else "<span class='chip'>Not payment-linked</span>"
+        )
 
-def view_output_header(out):
-    num   = out_nums.get(out["id"], "?")
-    title = escape(out.get("name", "Output"))
-    header_html = f"<div class='lf-out-header'><strong>Output {num}:</strong> {title}</div>"
-    return view_logframe_element(header_html, kind="output")
+        # Title
+        if is_outcome:
+            header = f"<div class='lf-kpi-title'>Outcome KPI: {name}</div>"
+        else:
+            header = f"<div class='lf-kpi-title'>KPI {num}: {name}</div>"
 
-def view_kpi(k):
-    # decide label prefix based on level
-    is_outcome = (k.get("parent_level") == "Outcome")
-    num  = kpi_nums.get(k["id"], "?") if not is_outcome else ""  # no numbering for outcome-level
-    name = k.get("name", "")
+        lines = []
+        if bp:
+            lines.append(f"<div class='lf-line'><b>Baseline:</b> {bp}</div>")
+        if tg:
+            lines.append(f"<div class='lf-line'><b>Target:</b> {tg}</div>")
+        if mov:
+            lines.append(f"<div class='lf-line'><b>Means of Verification:</b> {mov}</div>")
 
-    bp  = (k.get("baseline") or "").strip()
-    tg  = (k.get("target") or "").strip()
-    mov = (k.get("mov") or "").strip()
+        lines.append(f"<div class='lf-line'>{chip}</div>")
+        inner = header + "".join(lines)
+        return view_logframe_element(inner, kind="kpi")
 
-    chip = (
-        "<span class='chip green'>Payment-linked</span>"
-        if k.get("linked_payment")
-        else "<span class='chip'>Not payment-linked</span>"
-    )
+    def view_activity(a: dict, act_label: str, id_to_output: dict, id_to_kpi: dict) -> str:
+        """
+        Render one activity as a card.
+        - a: activity dict from st.session_state.workplan
+        - act_label: precomputed label like "1.2"
+        - id_to_output: {output_id -> output name}
+        - id_to_kpi:    {kpi_id -> kpi name}
+        """
+        out_name = id_to_output.get(a.get("output_id"), "(unassigned)")
+        title    = f"Activity {escape(act_label)} — {escape(a.get('name',''))}"
+        owner    = escape(a.get("owner","") or "—")
+        sd       = fmt_dd_mmm_yyyy(a.get("start")) or "—"
+        ed       = fmt_dd_mmm_yyyy(a.get("end"))   or "—"
+        kpis_txt = ", ".join(escape(id_to_kpi.get(kid,"")) for kid in (a.get("kpi_ids") or [])) or "—"
 
-    # Title
-    if is_outcome:
-        header = f"<div class='lf-kpi-title'>Outcome KPI: {name}</div>"
-    else:
-        header = f"<div class='lf-kpi-title'>KPI {num}: {name}</div>"
+        title_html = f"<div class='lf-activity-title'>{title}</div>"
+        rows = [
+            ("Output", out_name),
+            ("Owner", owner),
+            ("Start date", sd),
+            ("End date", ed),
+            ("Linked KPIs", kpis_txt),
+        ]
 
-    lines = []
-    if bp:
-        lines.append(f"<div class='lf-line'><b>Baseline:</b> {bp}</div>")
-    if tg:
-        lines.append(f"<div class='lf-line'><b>Target:</b> {tg}</div>")
-    if mov:
-        lines.append(f"<div class='lf-line'><b>Means of Verification:</b> {mov}</div>")
+        # Build rows (simple label/value pairs). You can skip empty ones here if desired.
+        body = "".join(
+            f"<div class='lf-line'><b>{escape(lbl)}:</b> {val}</div>"
+            for (lbl, val) in rows
+            if (val is not None and str(val).strip() != "")
+        )
 
-    lines.append(f"<div class='lf-line'>{chip}</div>")
-    inner = header + "".join(lines)
-    return view_logframe_element(inner, kind="kpi")
+        # Use your generic card wrapper (orange indicators style)
+        return view_logframe_element(title_html + body, kind="activity")
 
-def view_activity(a: dict, act_label: str, id_to_output: dict, id_to_kpi: dict) -> str:
-    """
-    Render one activity as a card.
-    - a: activity dict from st.session_state.workplan
-    - act_label: precomputed label like "1.2"
-    - id_to_output: {output_id -> output name}
-    - id_to_kpi:    {kpi_id -> kpi name}
-    """
-    out_name = id_to_output.get(a.get("output_id"), "(unassigned)")
-    title    = f"Activity {escape(act_label)} — {escape(a.get('name',''))}"
-    owner    = escape(a.get("owner","") or "—")
-    sd       = fmt_dd_mmm_yyyy(a.get("start")) or "—"
-    ed       = fmt_dd_mmm_yyyy(a.get("end"))   or "—"
-    kpis_txt = ", ".join(escape(id_to_kpi.get(kid,"")) for kid in (a.get("kpi_ids") or [])) or "—"
+    def make_ext_id(kind: str, text: str) -> str:
+        """
+        Deterministic short id for external linking across exports/imports.
+        kind: 'output' | 'kpi'
+        text: any stable text (e.g., output name; for KPI: 'OutputName|KPI text')
+        """
+        base = f"{kind}:{(text or '').strip().lower()}"
+        return hashlib.sha1(base.encode("utf-8")).hexdigest()[:10]
 
-    title_html = f"<div class='lf-activity-title'>{title}</div>"
-    rows = [
-        ("Output", out_name),
-        ("Owner", owner),
-        ("Start date", sd),
-        ("End date", ed),
-        ("Linked KPIs", kpis_txt),
-    ]
-
-    # Build rows (simple label/value pairs). You can skip empty ones here if desired.
-    body = "".join(
-        f"<div class='lf-line'><b>{escape(lbl)}:</b> {val}</div>"
-        for (lbl, val) in rows
-        if (val is not None and str(val).strip() != "")
-    )
-
-    # Use your generic card wrapper (orange indicators style)
-    return view_logframe_element(title_html + body, kind="activity")
-
-def make_ext_id(kind: str, text: str) -> str:
-    """
-    Deterministic short id for external linking across exports/imports.
-    kind: 'output' | 'kpi'
-    text: any stable text (e.g., output name; for KPI: 'OutputName|KPI text')
-    """
-    base = f"{kind}:{(text or '').strip().lower()}"
-    return hashlib.sha1(base.encode("utf-8")).hexdigest()[:10]
-
-# --- Inline preview with Edit / Delete buttons (refactored, card layout) ---
-with tabs[2]:
+    # --- Inline preview with Edit / Delete buttons (refactored, card layout) ---
     st.markdown("---")
     st.subheader("Current Logframe (preview) — click ✏️ to edit, 🗑️ to delete")
 
@@ -2729,8 +2721,8 @@ with tabs[2]:
                         )
 
 # ===== TAB 4: Workplan =====
-with tabs[3]:
-    st.header("📆 Workplan")
+def render_workplan():
+    st.header("🗂️ Workplan")
     with st.expander("➕ Add Activity"):
         with st.form("workplan_form_v2"):
             # Required: link to Output
@@ -2793,7 +2785,7 @@ with tabs[3]:
         outs_here = [o for o in st.session_state.outputs if o.get("parent_id") == oc["id"]]
         for out in outs_here:
             # green Output header card
-            st.markdown(view_output_header(out), unsafe_allow_html=True)
+            st.markdown(view_output_header(out, out_nums), unsafe_allow_html=True)
 
             # orange Activity cards (with edit/delete)
             acts_here = [a for a in st.session_state.workplan if a.get("output_id") == out["id"]]
@@ -2840,7 +2832,7 @@ with tabs[3]:
                         st.rerun()
 
 # ===== TAB 5: Budget =====
-with tabs[4]:
+def render_budget():
     st.header("💵 Define Budget")
     st.caption("Enter amounts in USD")
 
@@ -3094,7 +3086,7 @@ with tabs[4]:
     st.caption(footer_note)
 
 # ===== TAB 6: Disbursement Schedule =====
-with tabs[5]:
+def render_disbursement():
     st.header("💸 Disbursement Schedule")
 
     # Keep this table derived from KPIs (add/update/remove) while preserving date/amount
@@ -3130,242 +3122,170 @@ with tabs[5]:
     st.caption(footer_note)
 
 # ===== TAB 7: Export =====
-tabs[6].header("📤 Export Your Application")
-if tabs[6].button("Generate Backup File (Excel)"):
-    wb = Workbook()
-    if "Sheet" in wb.sheetnames:
-        wb.remove(wb["Sheet"])
+def render_export():
+    st.header("📤 Export Your Application")
 
-    # --- Sheet 0: Project Overview ---
-    def _sum_budget_for_export():
-        return sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
+    # --- Backup Excel ---
+    if st.button("Generate Backup File (Excel)", key="btn_gen_excel"):
+        wb = Workbook()
+        if "Sheet" in wb.sheetnames:
+            wb.remove(wb["Sheet"])
 
-    id_info = st.session_state.get("id_info", {}) or {}
+        # --- helpers / live data ---
+        def _sum_budget_for_export():
+            return sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
 
-    proj_title = id_info.get("title", "")
-    pi_name = id_info.get("pi_name", "")
-    pi_email = id_info.get("pi_email", "")
-    implementing_partners = id_info.get("implementing_partners", "")
-    supporting_partners = id_info.get("supporting_partners", "")
-    start_date = id_info.get("start_date", "")
-    end_date = id_info.get("end_date", "")
-    location = id_info.get("location", "")
-    contact_name = id_info.get("contact_name", "")
-    contact_mail = id_info.get("contact_email", "")
-    contact_phone = id_info.get("contact_phone", "")
+        id_info = st.session_state.get("id_info", {}) or {}
+        proj_title = id_info.get("title", "")
+        pi_name = id_info.get("pi_name", "")
+        pi_email = id_info.get("pi_email", "")
+        implementing_partners = id_info.get("implementing_partners", "")
+        supporting_partners = id_info.get("supporting_partners", "")
+        start_date = id_info.get("start_date", "")
+        end_date = id_info.get("end_date", "")
+        location = id_info.get("location", "")
+        contact_name = id_info.get("contact_name", "")
+        contact_mail = id_info.get("contact_email", "")
+        contact_phone = id_info.get("contact_phone", "")
 
-    # live computed
-    budget_total = _sum_budget_for_export()
-    outputs_count = len(st.session_state.get("outputs", []))
-    kpis_count = len(st.session_state.get("kpis", []))
-    activities_count = len(st.session_state.get("workplan", []))
+        budget_total = _sum_budget_for_export()
+        outputs_count = len(st.session_state.get("outputs", []))
+        kpis_count = len(st.session_state.get("kpis", []))
+        activities_count = len(st.session_state.get("workplan", []))
 
-    ws_id = wb.create_sheet("Project Overview", 0)  # put it first
-    ws_id.append(["Field", "Value"])
-    ws_id.append([LABELS["title"], proj_title])
-    ws_id.append([LABELS["pi_name"], pi_name])
-    ws_id.append([LABELS["pi_email"], pi_email])
-    ws_id.append([LABELS["implementing_partners"], implementing_partners])
-    ws_id.append([LABELS["supporting_partners"], supporting_partners])
-    ws_id.append([LABELS["start_date"], fmt_dd_mmm_yyyy(start_date)])
-    ws_id.append([LABELS["end_date"], fmt_dd_mmm_yyyy(end_date)])
-    ws_id.append([LABELS["location"], location])
-    ws_id.append([LABELS["contact_name"], contact_name])
-    ws_id.append([LABELS["contact_email"], contact_mail])
-    ws_id.append([LABELS["contact_phone"], contact_phone])
+        # Sheet 0: Project Overview
+        ws_id = wb.create_sheet("Project Overview", 0)
+        ws_id.append(["Field", "Value"])
+        ws_id.append([LABELS["title"], proj_title])
+        ws_id.append([LABELS["pi_name"], pi_name])
+        ws_id.append([LABELS["pi_email"], pi_email])
+        ws_id.append([LABELS["implementing_partners"], implementing_partners])
+        ws_id.append([LABELS["supporting_partners"], supporting_partners])
+        ws_id.append([LABELS["start_date"], fmt_dd_mmm_yyyy(start_date)])
+        ws_id.append([LABELS["end_date"], fmt_dd_mmm_yyyy(end_date)])
+        ws_id.append([LABELS["location"], location])
+        ws_id.append([LABELS["contact_name"], contact_name])
+        ws_id.append([LABELS["contact_email"], contact_mail])
+        ws_id.append([LABELS["contact_phone"], contact_phone])
+        ws_id.append([LABELS["total_funding"], f"USD {budget_total:,.2f}"])
+        ws_id.append([LABELS["outputs_count"], outputs_count])
+        ws_id.append([LABELS["kpis_count"], kpis_count])
+        ws_id.append([LABELS["activities_count"], activities_count])
 
-    # read-only summary values
-    ws_id.append([LABELS["total_funding"], f"USD {budget_total:,.2f}"])
-    ws_id.append([LABELS["outputs_count"], outputs_count])
-    ws_id.append([LABELS["kpis_count"], kpis_count])
-    ws_id.append([LABELS["activities_count"], activities_count])
+        # Sheet 1: Summary
+        s1 = wb.create_sheet("Summary", 1)
+        s1.append(["RowLevel", "ID", "ParentID", "Text / Title", "Assumptions"])
+        for row in st.session_state.get("impacts", []):
+            s1.append(["Goal", row.get("id", ""), "", row.get("name", ""), row.get("assumptions", "")])
+        for row in st.session_state.get("outcomes", []):
+            s1.append(["Outcome", row.get("id", ""), row.get("parent_id", ""), row.get("name", ""), row.get("assumptions", "")])
+        for row in st.session_state.get("outputs", []):
+            s1.append(["Output", row.get("id", ""), row.get("parent_id", ""), row.get("name", ""), row.get("assumptions", "")])
 
-    # Sheet 1: Summary (Goal/Outcome/Output) — with explicit IDs
-    s1 = wb.create_sheet("Summary", 1)
-    s1.append(["RowLevel", "ID", "ParentID", "Text / Title", "Assumptions"])
+        # Sheet 2: KPI Matrix
+        s2 = wb.create_sheet("KPI Matrix")
+        s2.append(["KPIID","Parent Level","ParentID","Parent (label)","KPI","Baseline","Target","Linked to Payment","Means of Verification"])
+        out_nums, kpi_nums = compute_numbers()
+        output_title = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
+        outcome_name = (st.session_state.outcomes[0]["name"] if st.session_state.outcomes else "")
+        for k in st.session_state.kpis:
+            plevel = k.get("parent_level", "Output")
+            pid = k.get("parent_id", "")
+            parent_label = f"Outcome — {outcome_name}" if plevel == "Outcome" else f"Output {out_nums.get(pid,'')} — {output_title.get(pid,'')}"
+            s2.append([
+                k.get("id",""), plevel, pid, parent_label, k.get("name",""),
+                k.get("baseline",""), k.get("target",""),
+                "Yes" if k.get("linked_payment") else "No", k.get("mov","")
+            ])
 
-    # Goal rows
-    for row in st.session_state.get("impacts", []):
-        s1.append(["Goal", row.get("id", ""), "", row.get("name", ""), row.get("assumptions", "")])
+        # Sheet 3: Workplan
+        out_nums, kpi_nums, act_nums = compute_numbers(include_activities=True)
+        ws2 = wb.create_sheet("Workplan")
+        ws2.append(["Activity ID","Activity #","OutputID","Output","Activity","Owner","Start","End","Linked KPI IDs","Linked KPIs"])
+        id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
+        id_to_kpi = {k["id"]: (k.get("name") or "") for k in st.session_state.kpis}
+        for a in st.session_state.workplan:
+            ws2.append([
+                a.get("id",""), act_nums.get(a["id"],""), a.get("output_id",""),
+                id_to_output.get(a.get("output_id"),""), a.get("name",""), a.get("owner",""),
+                fmt_dd_mmm_yyyy(a.get("start")), fmt_dd_mmm_yyyy(a.get("end")),
+                ",".join(a.get("kpi_ids") or []),
+                ", ".join(id_to_kpi.get(i,"") for i in (a.get("kpi_ids") or [])),
+            ])
 
-    # Outcome rows
-    for row in st.session_state.get("outcomes", []):
-        s1.append([
-            "Outcome",
-            row.get("id", ""),
-            row.get("parent_id", ""),
-            row.get("name", ""),
-            row.get("assumptions", ""),
-        ])
+        # Sheet 4: Budget
+        ws3 = wb.create_sheet("Budget")
+        ws3.append(["Linked Output","Linked Activity","Budget Line Item","Cost Category","Sub Category","Unit","Unit Cost (USD)","Quantity","Total Cost (USD)"])
+        out_label = lambda oid: (f"Output {out_nums.get(oid,'')} — " + (next((o.get('name','') for o in st.session_state.outputs if o['id']==oid), ""))).strip(" —")
+        act_lookup = {**activity_label_map(act_nums)}  # label by activity id
+        def act_label(aid): return (act_lookup.get(aid,"") or "").strip(" —")
+        for r in st.session_state.get("budget", []):
+            ws3.append([
+                out_label(r.get("output_id")) if r.get("output_id") else "",
+                act_label(r.get("activity_id")) if r.get("activity_id") else "",
+                r.get("item",""), r.get("category",""), r.get("subcategory",""), r.get("unit",""),
+                float(r.get("unit_cost") or 0.0), float(r.get("qty") or 0.0), float(r.get("total_usd") or 0.0),
+            ])
+        for row in ws3.iter_rows(min_row=2):
+            row[6].number_format = '#,##0.00'
+            row[7].number_format = '#,##0.00'
+            row[8].number_format = '#,##0.00'
 
-    # Output rows (include assumptions)
-    for row in st.session_state.get("outputs", []):
-        s1.append([
-            "Output",
-            row.get("id", ""),
-            row.get("parent_id", ""),
-            row.get("name", ""),
-            row.get("assumptions", "")
-        ])
+        # Sheet 5: Disbursement Schedule
+        wsd = wb.create_sheet("Disbursement Schedule")
+        wsd.append(["KPIID","Anticipated deliverable date","Deliverable","Maximum Grant instalment payable on satisfaction of this deliverable (USD)"])
+        from datetime import date as _date
+        src = list(st.session_state.get("disbursement", [])) or [
+            {"kpi_id":k["id"],"output_id":k.get("parent_id"),"anticipated_date":k.get("end_date") or k.get("start_date") or None,"deliverable":k.get("name",""),"amount_usd":0.0}
+            for k in st.session_state.kpis if bool(k.get("linked_payment"))
+        ]
+        rows = sorted(src, key=lambda d: (d.get("output_id"), d.get("anticipated_date") or _date(2100,1,1), d.get("deliverable") or ""))
+        for d in rows:
+            wsd.append([d.get("kpi_id") or "", d.get("anticipated_date") or None, d.get("deliverable") or "", float(d.get("amount_usd") or 0.0)])
+        for r in wsd.iter_rows(min_row=2):
+            r[1].number_format = 'DD/mmm/YYYY'
+            r[3].number_format = '#,##0.00'
 
-    # Sheet 2: KPI Matrix — include KPIID and ParentID (labels are just helpers)
-    s2 = wb.create_sheet("KPI Matrix")
-    s2.append([
-        "KPIID", "Parent Level", "ParentID", "Parent (label)",
-        "KPI", "Baseline", "Target",
-        "Linked to Payment", "Means of Verification"
-    ])
-
-    out_nums, kpi_nums = compute_numbers()
-    output_title = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
-    outcome_name = (st.session_state.outcomes[0]["name"] if st.session_state.outcomes else "")
-
-    for k in st.session_state.kpis:
-        plevel = k.get("parent_level", "Output")
-        pid = k.get("parent_id", "")
-        parent_label = (
-            f"Outcome — {outcome_name}" if plevel == "Outcome"
-            else f"Output {out_nums.get(pid, '')} — {output_title.get(pid, '')}"
+        # download
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        st.download_button(
+            "📥 Download Backup File (Excel)",
+            data=buf,
+            file_name="Application_Submission.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        s2.append([
-            k.get("id", ""),
-            plevel,
-            pid,
-            parent_label,
-            k.get("name", ""),
-            k.get("baseline", ""),
-            k.get("target", ""),
-            "Yes" if k.get("linked_payment") else "No",
-            k.get("mov", ""),
-        ])
 
-    # Workplan (export)
-    out_nums, kpi_nums, act_nums = compute_numbers(include_activities=True)
-    ws2 = wb.create_sheet("Workplan")
-    ws2.append([
-        "Activity ID", "Activity #",
-        "OutputID", "Output",
-        "Activity", "Owner", "Start", "End",
-        "Linked KPI IDs", "Linked KPIs"
-    ])
+    # --- Word export ---
+    if st.button("Generate Project Design Document (Word)", key="btn_gen_word"):
+        try:
+            word_buf = render_pdd()
+            proj_title = (st.session_state.get("id_info", {}) or {}).get("title", "") or "Project"
+            safe = re.sub(r"[^A-Za-z0-9]+", "_", proj_title).strip("_") or "Project"
+            st.download_button(
+                "📥 Download Project Design Document (Word)",
+                data=word_buf,
+                file_name=f"PDD_{safe}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        except ModuleNotFoundError:
+            st.error("`python-docx` is required. Install it with: pip install python-docx")
+        except Exception as e:
+            st.error(f"Could not generate the Word Document: {e}")
 
-    id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
-    id_to_kpi = {k["id"]: (k.get("name") or "") for k in st.session_state.kpis}
+# ---- Tab registration ----
+reg = TabRegistry()
+reg.register(Tab(key="welcome", label="📘 Welcome & Instructions", render=render_welcome))
+reg.register(Tab(key="overview", label="🪪 Project Overview", render=render_overview))
+reg.register(Tab(key="logframe", label="🧱 Logframe", render=render_logframe))
+reg.register(Tab(key="workplan", label="🗂️ Workplan", render=render_workplan))
+reg.register(Tab(key="budget", label="💵 Budget", render=render_budget))
+reg.register(Tab(key="disbursement", label="💸 Disbursement Schedule", render=render_disbursement))
+reg.register(Tab(key="export", label="📤 Export", render=render_export))
 
-    for a in st.session_state.workplan:
-        ws2.append([
-            a.get("id", ""),
-            act_nums.get(a["id"], ""),
-            a.get("output_id", ""),
-            id_to_output.get(a.get("output_id"), ""),
-            a.get("name", ""),
-            a.get("owner", ""),
-            fmt_dd_mmm_yyyy(a.get("start")),
-            fmt_dd_mmm_yyyy(a.get("end")),
-            ",".join(a.get("kpi_ids") or []),  # machine IDs
-            ", ".join(id_to_kpi.get(i, "") for i in (a.get("kpi_ids") or [])),  # display names
-        ])
-
-    # --- Budget (export, detailed) ---
-    ws3 = wb.create_sheet("Budget")
-    ws3.append([
-        "Linked Output", "Linked Activity",
-        "Budget Line Item", "Cost Category", "Sub Category",
-        "Unit", "Unit Cost (USD)", "Quantity", "Total Cost (USD)"
-    ])
-
-    out_nums, _, act_nums = compute_numbers(include_activities=True)
-    out_label = lambda oid: (f"Output {out_nums.get(oid, '')} — " + (
-        next((o.get('name', '') for o in st.session_state.outputs if o['id'] == oid), ""))).strip(" —")
-    act_lookup = activity_label_map(act_nums)
-
-    def act_label(aid):
-        return (act_lookup.get(aid, "") or "").strip(" —")
-
-    for r in st.session_state.get("budget", []):
-        ws3.append([
-            out_label(r.get("output_id")) if r.get("output_id") else "",
-            act_label(r.get("activity_id")) if r.get("activity_id") else "",
-            r.get("item", ""),
-            r.get("category", ""),
-            r.get("subcategory", ""),
-            r.get("unit", ""),
-            float(r.get("unit_cost") or 0.0),
-            float(r.get("qty") or 0.0),
-            float(r.get("total_usd") or 0.0),
-        ])
-
-    # Number formats for currency/qty/total
-    for row in ws3.iter_rows(min_row=2):
-        row[6].number_format = '#,##0.00'  # unit cost
-        row[7].number_format = '#,##0.00'  # quantity (allow decimals)
-        row[8].number_format = '#,##0.00'  # total
-
-    # --- Disbursement Schedule (export) ---
-    wsd = wb.create_sheet("Disbursement Schedule")
-    wsd.append([
-        "KPIID",  # machine id for mapping back
-        "Anticipated deliverable date",
-        "Deliverable",
-        "Maximum Grant instalment payable on satisfaction of this deliverable (USD)"
-    ])
-
-    from datetime import date as _date
-
-    src = list(st.session_state.get("disbursement", [])) or [
-        {
-            "kpi_id": k["id"],
-            "output_id": k.get("parent_id"),
-            "anticipated_date": k.get("end_date") or k.get("start_date") or None,
-            "deliverable": k.get("name", ""),
-            "amount_usd": 0.0,
-        }
-        for k in st.session_state.kpis if bool(k.get("linked_payment"))
-    ]
-
-    rows = sorted(
-        src,
-        key=lambda d: (d.get("output_id"), d.get("anticipated_date") or _date(2100, 1, 1),
-                       d.get("deliverable") or "")
-    )
-
-    for d in rows:
-        # write actual date object; openpyxl will store a true Excel date
-        wsd.append([
-            d.get("kpi_id") or "",
-            d.get("anticipated_date") or None,  # <-- date, not string
-            (d.get("deliverable") or ""),
-            float(d.get("amount_usd") or 0.0),
-        ])
-
-    # Number formats: Date (col B) and Amount (col D)
-    for r in wsd.iter_rows(min_row=2):
-        r[1].number_format = 'DD/mmm/YYYY'  # e.g., 01/Oct/2025
-        r[3].number_format = '#,##0.00'
-
-    buf = BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    tabs[6].download_button(
-        "📥 Download Backup File (Excel)",
-        data=buf,
-        file_name="Application_Submission.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
-# --- Word export (Logframe as table)
-if tabs[6].button("Generate Project Design Document (Word)"):
-    try:
-        word_buf = render_pdd()
-        proj_title = (st.session_state.get("id_info", {}) or {}).get("title", "") or "Project"
-        safe = re.sub(r"[^A-Za-z0-9]+", "_", proj_title).strip("_") or "Project"
-        tabs[6].download_button(
-            "📥 Download Project Design Document (Word)",
-            data=word_buf,
-            file_name=f"PDD_{safe}.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
-    except ModuleNotFoundError:
-        tabs[6].error("`python-docx` is required. Install it with: pip install python-docx")
-    except Exception as e:
-        tabs[6].error(f"Could not generate the Word Document: {e}")
+# ---- Build Streamlit tabs ----
+tabs = st.tabs(reg.labels())
+for st_tab, tab in zip(tabs, reg.tabs()):
+    with st_tab:
+        tab.render()
