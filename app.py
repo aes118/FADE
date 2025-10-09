@@ -1079,26 +1079,6 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Cm
 
-    def _align_header_logo_right(section):
-        """
-        For the given section:
-        - Unlink header from previous so it can differ in landscape.
-        - Right-align all header paragraphs and text in header tables.
-        """
-        hdr = section.header
-        hdr.is_linked_to_previous = False
-
-        # Plain paragraphs in the header
-        for p in hdr.paragraphs:
-            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-
-        # If the template header uses a table, align text in all cells to the right
-        for tbl in hdr.tables:
-            for row in tbl.rows:
-                for cell in row.cells:
-                    for p in cell.paragraphs:
-                        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-
     # set first section portrait
     first_section = doc.sections[0]
     _set_orientation(first_section, WD_ORIENT.PORTRAIT)
@@ -1120,7 +1100,8 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         h1 = doc.styles['Heading 1'].font
         h1.name = "Calibri"
         h1.size = Pt(14)
-        h1.color.rgb = RGBColor(10, 47, 65)
+        h1.bold = True
+        h1.color.rgb = RGBColor(15, 71, 97)
     except KeyError:
         pass
 
@@ -1128,7 +1109,8 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         h2 = doc.styles['Heading 2'].font
         h2.name = "Calibri"
         h2.size = Pt(12)
-        h2.color.rgb = RGBColor(10, 47, 65)
+        h2.bold = True
+        h2.color.rgb = RGBColor(15, 71, 97)
     except KeyError:
         pass
 
@@ -1182,18 +1164,38 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         p.style = doc.styles['Heading 1']
         return p
 
-    def _new_landscape_section(title):
+    def _new_section(title: str, orientation):
+        """
+        Add a new section with the given orientation.
+        Leave headers/footers LINKED to previous so the template header/logo persists.
+        """
         section = doc.add_section(WD_SECTION_START.NEW_PAGE)
-        _set_orientation(section, WD_ORIENT.LANDSCAPE)
-        _align_header_logo_right(section)
+        _set_orientation(section, orientation)
+
+        # Ensure linkage stays on (it's True by default, but harmless to assert explicitly)
+        section.header.is_linked_to_previous = True
+        section.footer.is_linked_to_previous = True
+
         _h1(title)
         return section
 
-    def _new_portrait_section(title):
-        section = doc.add_section(WD_SECTION_START.NEW_PAGE)
-        _set_orientation(section, WD_ORIENT.PORTRAIT)
-        _h1(title)
-        return section
+    def _new_portrait_section(title: str):
+        return _new_section(title, WD_ORIENT.PORTRAIT)
+
+    def _new_landscape_section(title: str):
+        return _new_section(title, WD_ORIENT.LANDSCAPE)
+
+    # def _new_landscape_section(title):
+    #     section = doc.add_section(WD_SECTION_START.NEW_PAGE)
+    #     _set_orientation(section, WD_ORIENT.LANDSCAPE)
+    #     _h1(title)
+    #     return section
+    #
+    # def _new_portrait_section(title):
+    #     section = doc.add_section(WD_SECTION_START.NEW_PAGE)
+    #     _set_orientation(section, WD_ORIENT.PORTRAIT)
+    #     _h1(title)
+    #     return section
 
     # (your gantt helper unchanged)
     def _gantt_png_buf():
@@ -1295,7 +1297,7 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
             _set_cell_text(row.cells[2], str(r.get("Role & responsibility", "")))
 
     # ===== Logframe =====
-    logframe_section = _new_landscape_section("Logframe")
+    logframe_section = _new_landscape_section("Logical framework")
 
     goal = st.session_state.impacts[0] if st.session_state.get("impacts") else {}
     goal_text = goal.get("name", "")
@@ -1886,7 +1888,6 @@ header [data-testid="stLogo"] {
 }
 
 /* Budget tab formatting */
-<style>
 /* Column headers bolder */
 div[data-testid="column"] label p { font-weight: 600; }
 
