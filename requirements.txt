@@ -1,6 +1,6 @@
 # Core web app
 streamlit>=1.33
-streamlit-quill>=0.1.0   # rich text editor widget
+streamlit-quill
 bleach>=6.1.0            # HTML sanitizer used with Quill
 
 # Data handling
