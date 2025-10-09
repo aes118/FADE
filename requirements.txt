@@ -8,3 +8,5 @@ requests>=2.31
 streamlit-quill
 html2docx>=1.6
 beautifulsoup4
+html2docx
+

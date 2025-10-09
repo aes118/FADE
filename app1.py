@@ -18,38 +18,6 @@ from docx.enum.section import WD_ORIENT, WD_SECTION_START
 from docx.shared import Pt
 from docx.oxml.ns import qn
 from tabs_registry import Tab, TabRegistry
-# put this near the top, after imports
-try:
-    from streamlit_quill import st_quill as _st_quill
-except Exception:
-    _st_quill = None
-
-def quill_html(widget_key: str, initial_html: str = "", placeholder: str = "", toolbar: bool = True) -> str:
-    """
-    Version-tolerant wrapper around streamlit-quill:
-    - Uses only supported args (value, html, placeholder, toolbar, key)
-    - Falls back gracefully if older signature is installed or plugin missing
-    """
-    if _st_quill is None:
-        # plugin not installed -> fallback
-        return st.text_area("", value=initial_html, help=placeholder, key=f"{widget_key}__fallback") or ""
-
-    # Try the modern signature (no 'height', no 'theme', no 'label')
-    try:
-        return _st_quill(
-            value=initial_html,
-            html=True,          # return HTML string
-            placeholder=placeholder,
-            toolbar=toolbar,
-            key=widget_key,
-        ) or ""
-    except TypeError:
-        # Very old versions may not accept keyword args other than key
-        try:
-            return _st_quill(initial_html, key=widget_key) or ""
-        except TypeError:
-            # Last resort fallback
-            return st.text_area("", value=initial_html, help=placeholder, key=f"{widget_key}__fallback2") or ""
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Falcon Awards Project Portal", layout="wide")
@@ -90,7 +58,7 @@ def generate_id():
 footer_note = "Note: All monetary values are in USD and will be converted to AED in the official project agreement."
 
 # app state
-for key in ["impacts", "outcomes", "outputs", "kpis", "workplan", "budget", "disbursement"]:
+for key in ["impacts", "outcomes", "outputs", "kpis", "workplan", "budget", "disbursement", "risks"]:
     if key not in st.session_state:
         st.session_state[key] = []
 
@@ -373,16 +341,11 @@ def _draw_gantt(ax, df, *, show_today=False):
         edgecolor="white", linewidth=0.8, alpha=0.95
     )
 
-    # Optional: label durations at the end of each bar (uncomment to enable)
-    # for yi, s, w in zip(y, lefts, widths):
-    #     ax.text(s + timedelta(days=w) , yi, f" {int(w)}d",
-    #             va="center", ha="left", fontsize=8, color="#444")
-
     # ---- Y axis: activities
     ax.set_yticks(y)
     ax.set_yticklabels(df["ActivityLabel"], fontsize=9)
     ax.invert_yaxis()
-    ax.set_ylabel("Activity")
+    ax.set_ylabel("Activities")
 
     # ---- X axis: quarterly major ticks + monthly minors; labels MMM-YYYY
     ax.xaxis.set_major_locator(mdates.MonthLocator(bymonth=(1,4,7,10)))  # Jan/Apr/Jul/Oct
@@ -416,23 +379,37 @@ def _draw_gantt(ax, df, *, show_today=False):
         ax.text(today, ax.get_ylim()[0] - 0.25, "Today", rotation=90,
                 va="top", ha="center", fontsize=8, color="#666")
 
-    # ---- Legend (bottom center), tidy spacing
+    # ---- Legend (adaptive layout & centered nicely) ----
     handles = [
         Patch(facecolor=color_map[o], label=output_labels.get(o, o))
         for o in ordered_outputs
     ]
+
+    # Auto-adjust number of columns for readability
+    num_items = len(handles)
+    if num_items <= 5:
+        ncol = 1  # single column (few outputs)
+    elif num_items <= 10:
+        ncol = 2  # medium
+    else:
+        ncol = 3  # many outputs → 3 columns
+
+    # Compute a slightly lower anchor for multi-column legends
+    y_offset = -0.25 - (0.07 * (ncol - 1))
+
     ax.legend(
         handles=handles,
         title="Outputs",
         loc="upper center",
-        bbox_to_anchor=(0.2, -0.30),
-        ncol=2,  # wrap if many outputs
-        # ncol=min(len(handles), 4),  # wrap if many outputs
+        bbox_to_anchor=(0.5, y_offset),  # centered horizontally
+        ncol=ncol,
         frameon=False,
         handlelength=1.8,
-        columnspacing=1.4,
+        columnspacing=1.2,
         handletextpad=0.6,
         borderaxespad=0.0,
+        fontsize=8,
+        title_fontsize=9,
     )
 
 def select_output_id(label, current_id, key):
@@ -552,7 +529,6 @@ def _assumption_items(text: str) -> list:
             items.append(cleaned)
     return items
 
-
 def _assumptions_html(text: str) -> str:
     """HTML block (heading + list) for assumptions."""
     items = _assumption_items(text)
@@ -565,7 +541,6 @@ def _assumptions_html(text: str) -> str:
         f"<ul class='lf-ass-list'>{lis}</ul>"
         "</div>"
     )
-
 
 def _assumptions_doc_text(text: str) -> str:
     """Plain text bullet list (with •) for Word export."""
@@ -618,53 +593,61 @@ def sync_disbursement_from_kpis():
     # remove rows for KPIs no longer payment-linked
     st.session_state.disbursement = [d for d in st.session_state.disbursement if d.get("kpi_id") in keep_ids]
 
-def _force_calibri_everywhere(doc):
-    # 1. Update the document's default styles
-    for style_name in ["Normal", "Heading 1", "Heading 2", "Heading 3", "Table Grid"]:
+def _force_calibri_everywhere(doc, body_size_pt: int = 11):
+    """
+    Normalize fonts to Calibri, but DO NOT clobber heading sizes.
+    - Set 'Normal' + table styles to body_size_pt.
+    - Leave Heading 1/2/3 sizes alone (you will set them elsewhere).
+    - Avoid run-level size overrides so paragraph styles can take effect.
+    """
+    from docx.shared import Pt
+    from docx.oxml.ns import qn
+
+    # 1) Only set explicit size on 'Normal' and table styles
+    for style_name in ["Normal", "Table Grid"]:
         try:
             style = doc.styles[style_name]
             font = style.font
             font.name = "Calibri"
-            font.size = Pt(10)
+            font.size = Pt(body_size_pt)
             rpr = style.element.rPr
-            if rpr is not None:
+            if rpr is not None and rpr.rFonts is not None:
                 rFonts = rpr.rFonts
-                if rFonts is not None:
-                    rFonts.set(qn("w:ascii"), "Calibri")
-                    rFonts.set(qn("w:hAnsi"), "Calibri")
-                    rFonts.set(qn("w:cs"), "Calibri")
+                rFonts.set(qn("w:ascii"), "Calibri")
+                rFonts.set(qn("w:hAnsi"), "Calibri")
+                rFonts.set(qn("w:cs"), "Calibri")
         except KeyError:
-            # style may not exist in this template
             pass
 
-    # 2. Sweep through all paragraphs and runs
+    # 2) Ensure heading styles use Calibri (BUT do not set size here)
+    for style_name in ["Heading 1", "Heading 2", "Heading 3"]:
+        try:
+            style = doc.styles[style_name]
+            font = style.font
+            font.name = "Calibri"
+            # font.size: leave as-is; will be set elsewhere
+            rpr = style.element.rPr
+            if rpr is not None and rpr.rFonts is not None:
+                rFonts = rpr.rFonts
+                rFonts.set(qn("w:ascii"), "Calibri")
+                rFonts.set(qn("w:hAnsi"), "Calibri")
+                rFonts.set(qn("w:cs"), "Calibri")
+        except KeyError:
+            pass
+
+    # 3) Sweep runs to set font family only; DO NOT set run-level size
     for p in doc.paragraphs:
         for run in p.runs:
             run.font.name = "Calibri"
-            run.font.size = Pt(10)
-            rpr = run._element.rPr
-            if rpr is not None:
-                rFonts = rpr.rFonts
-                if rFonts is not None:
-                    rFonts.set(qn("w:ascii"), "Calibri")
-                    rFonts.set(qn("w:hAnsi"), "Calibri")
-                    rFonts.set(qn("w:cs"), "Calibri")
+            # run.font.size = Pt(body_size_pt)  # <-- DON'T: let styles control size
 
-    # 3. Sweep through all table cells
     for tbl in doc.tables:
         for row in tbl.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
                     for run in p.runs:
                         run.font.name = "Calibri"
-                        run.font.size = Pt(10)
-                        rpr = run._element.rPr
-                        if rpr is not None:
-                            rFonts = rpr.rFonts
-                            if rFonts is not None:
-                                rFonts.set(qn("w:ascii"), "Calibri")
-                                rFonts.set(qn("w:hAnsi"), "Calibri")
-                                rFonts.set(qn("w:cs"), "Calibri")
+                        # run.font.size = Pt(body_size_pt)  # <-- DON'T
 
 def _render_budget_row_editor(rec: dict, rid: str, act_lookup: dict) -> None:
     """Standalone editor card for a single budget row (rid).
@@ -840,121 +823,196 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
 
     from io import BytesIO
     from pathlib import Path
+    from copy import deepcopy
+    import re
 
-    # --- Minimal HTML -> python-docx rendering (for Quill output) ---
-    def _add_runs(par, text, *, bold=False, italic=False, underline=False):
-        if not text:
-            return
-        run = par.add_run(text)
-        run.bold = bool(bold)
-        run.italic = bool(italic)
-        run.underline = bool(underline)
+    def _looks_like_html(s: str) -> bool:
+        return bool(s and re.search(r"<[a-zA-Z][\s/>]", s))
 
-    def _render_inline(par, node, ctx):
-        # node is NavigableString or Tag with inline semantics
-        from bs4 import BeautifulSoup, NavigableString, Tag
-        if isinstance(node, str):
-            _add_runs(par, node, **ctx)
+    # place once, near the top of render_pdd(), after the _HAS_HTML2DOCX/_html2docx import
+    # def _append_html(doc, html_str: str) -> None:
+    #     from html2docx import html2docx
+    #     s = html_str.replace("&nbsp;", " ")
+    #
+    #     # Ensure there is at least one block element at the root
+    #     if not re.search(r"</?(p|div|ul|ol|li|h\d|blockquote|pre|table)\b", s, flags=re.I):
+    #         s = f"<p>{s}</p>"
+    #
+    #     # Per html2docx docs: html2docx(html, doc) appends into the SAME Document
+    #     html2docx(s, doc)
+
+    def _append_html(doc, html_str: str):
+        """
+        Append HTML into the existing python-docx `doc`.
+        Uses html2docx parser when available; otherwise falls back to plain text.
+        """
+        # --- HTML → DOCX per html2docx docs ---
+        try:
+            from html2docx import HtmlToDocx
+            _HTML2DOCX = HtmlToDocx()  # parser instance
+            _HAS_HTML2DOCX = True
+        except Exception:
+            _HTML2DOCX = None
+            _HAS_HTML2DOCX = False
+
+        if not html_str:
             return
-        if node.name in ("strong", "b"):
-            ctx2 = {**ctx, "bold": True}
-            for ch in node.children: _render_inline(par, ch, ctx2)
-        elif node.name in ("em", "i"):
-            ctx2 = {**ctx, "italic": True}
-            for ch in node.children: _render_inline(par, ch, ctx2)
-        elif node.name in ("u",):
-            ctx2 = {**ctx, "underline": True}
-            for ch in node.children: _render_inline(par, ch, ctx2)
-        elif node.name == "br":
-            par.add_run("\n")
-        elif node.name == "a":
-            # show link text + (URL)
-            href = node.get("href", "")
-            txt = node.get_text(strip=False)
-            _add_runs(par, txt, **ctx)
-            if href and href != txt:
-                _add_runs(par, f" ({href})", **ctx)
+
+        # Normalize & ensure a block-level root so the parser doesn’t drop inline-only content
+        s = (html_str or "").replace("&nbsp;", " ")
+        if not re.search(r"</?(p|div|ul|ol|li|h\d|blockquote|pre|table)\b", s, flags=re.I):
+            s = f"<p>{s}</p>"
+
+        if _HAS_HTML2DOCX:
+            # ✅ Official API per https://pypi.org/project/html2docx/
+            _HTML2DOCX.add_html_to_document(s, doc)
         else:
-            # generic inline container (span, etc.)
-            for ch in node.children: _render_inline(par, ch, ctx)
+            # Fallback: plain text
+            try:
+                from bs4 import BeautifulSoup
+                plain = BeautifulSoup(s, "html.parser").get_text("\n")
+            except Exception:
+                plain = re.sub("<[^>]+>", "", s)
+            p = doc.add_paragraph(plain)
+        # st.text(html_str)
 
-    def _render_block(doc, node):
-        # node is a Tag: p/div/ul/ol/li/h1/h2/h3…
-        from bs4 import BeautifulSoup
-        name = (node.name or "").lower()
-
-        if name in ("p", "div"):
-            par = doc.add_paragraph()
-            for ch in node.children:
-                _render_inline(par, ch, {"bold": False, "italic": False, "underline": False})
-
-        elif name in ("ul", "ol"):
-            bullet = (name == "ul")
-            for li in node.find_all("li", recursive=False):
-                style = "List Bullet" if bullet else "List Number"
-                par = doc.add_paragraph(style=style)
-                for ch in li.children:
-                    _render_inline(par, ch, {"bold": False, "italic": False, "underline": False})
-
-        elif name in ("h1", "h2", "h3"):
-            # map HTML headings to Word headings (keep it simple)
-            style = "Heading 2" if name == "h2" else ("Heading 3" if name == "h3" else "Heading 2")
-            par = doc.add_paragraph(style=style)
-            par.add_run(node.get_text(strip=True))
-
-        else:
-            # fallback: create a paragraph with text
-            par = doc.add_paragraph()
-            par.add_run(node.get_text(strip=False))
-
-    def _render_quill_html(doc, html_string: str):
-        """Render a small subset of HTML into the doc (paragraphs, inline styles, lists, links)."""
-        from bs4 import BeautifulSoup
-        html_string = (html_string or "").strip()
-        if not html_string:
+    def _append_basic_html(doc, html_str: str):
+        """
+        Dependency-free fallback for common Quill HTML:
+        <p>, <div>, <ul>/<ol>/<li>, <strong>/<em>/<u>/<s>, <code>, <br>, <h1-3>, <blockquote>.
+        Produces real bullets/numbers & inline emphasis.
+        """
+        try:
+            from bs4 import BeautifulSoup
+            from bs4.element import NavigableString, Tag
+        except Exception:
+            # last resort: plain text
+            text = re.sub("<[^>]+>", "", html_str or "").strip()
+            if text:
+                doc.add_paragraph(text)
             return
-        soup = BeautifulSoup(html_string, "html.parser")
-        # If the editor returns raw text w/o block tags, wrap as one paragraph
-        top_blocks = [n for n in soup.contents if getattr(n, "name", None) or str(n).strip()]
-        if not any(getattr(n, "name", None) in ("p", "div", "ul", "ol", "h1", "h2", "h3") for n in soup.find_all(True)):
-            par = doc.add_paragraph()
-            par.add_run(soup.get_text(strip=False))
-            return
-        for n in soup.contents:
-            if getattr(n, "name", None):
-                _render_block(doc, n)
-            else:
-                # stray text between blocks -> its own paragraph
-                t = str(n).strip()
+
+        soup = BeautifulSoup((html_str or "").replace("&nbsp;", " "), "html.parser")
+        root = soup.body or soup
+
+        def add_inline(p, node, bold=False, italic=False, underline=False, strike=False, mono=False):
+            if isinstance(node, NavigableString):
+                t = str(node)
                 if t:
-                    doc.add_paragraph(t)
+                    r = p.add_run(t)
+                    if bold: r.bold = True
+                    if italic: r.italic = True
+                    if underline: r.underline = True
+                    if strike: r.font.strike = True
+                    if mono: r.font.name = "Consolas"
+                return
+            if not isinstance(node, Tag): return
+            nb, ni, nu, ns, nm = bold, italic, underline, strike, mono
+            tag = node.name.lower()
+            if tag in ("strong", "b"):
+                nb = True
+            elif tag in ("em", "i"):
+                ni = True
+            elif tag == "u":
+                nu = True
+            elif tag in ("s", "strike", "del"):
+                ns = True
+            elif tag == "code":
+                nm = True
+            if tag == "br":
+                p.add_run().add_break();
+                return
+            if tag == "a":  # keep link text
+                for ch in node.children: add_inline(p, ch, nb, ni, True, ns, nm)
+                return
+            for ch in node.children: add_inline(p, ch, nb, ni, nu, ns, nm)
+
+        def render_list(tag, ordered: bool):
+            style = "List Number" if ordered else "List Bullet"
+            for li in tag.find_all("li", recursive=False):
+                p = doc.add_paragraph(style=style)
+                for ch in li.contents:
+                    if isinstance(ch, NavigableString):
+                        add_inline(p, ch)
+                    elif isinstance(ch, Tag):
+                        if ch.name.lower() in ("ul", "ol"):
+                            render_list(ch, ordered=(ch.name.lower() == "ol"))
+                        else:
+                            add_inline(p, ch)
+
+        def render_block(node):
+            if isinstance(node, NavigableString):
+                s = str(node).strip()
+                if s: doc.add_paragraph(s)
+                return
+            if not isinstance(node, Tag): return
+            tag = node.name.lower()
+            if tag in ("ul", "ol"):
+                render_list(node, ordered=(tag == "ol"))
+            elif tag in ("p", "div"):
+                if not node.get_text("", strip=True): return
+                p = doc.add_paragraph()
+                for ch in node.children: add_inline(p, ch)
+            elif tag in ("h1", "h2", "h3"):
+                txt = node.get_text(" ", strip=True);
+                p = doc.add_paragraph(txt)
+                p.style = "Heading 2" if tag == "h2" else ("Heading 3" if tag == "h3" else "Heading 1")
+            elif tag == "blockquote":
+                p = doc.add_paragraph(node.get_text(" ", strip=True))
+                # use Intense Quote if available, else keep default
+                if "Intense Quote" in [s.name for s in doc.styles]: p.style = "Intense Quote"
+            elif tag == "pre":
+                p = doc.add_paragraph(node.get_text("", strip=False))
+                for r in p.runs: r.font.name = "Consolas"
+            else:
+                p = doc.add_paragraph()
+                for ch in node.children: add_inline(p, ch)
+
+        for ch in list(root.children): render_block(ch)
+
 
     template_path = Path("templates/pdd_template.docx")
     if not template_path.exists():
         st.error(f"Template not found: {template_path}")
         raise FileNotFoundError(f"Template not found: {template_path}")
 
+    # --- small helper: render plain text blocks (paragraphs + simple bullets) ---
+    def _render_plain_to_doc(doc, text: str):
+        if not text:
+            return
+        blocks = re.split(r"\n\s*\n", text.strip())
+        for block in blocks:
+            lines = block.splitlines()
+            bullet_lines = [ln for ln in lines if re.match(r"^\s*([\-*•])\s+", ln)]
+            if lines and len(bullet_lines) >= max(1, len(lines) // 2):
+                for ln in lines:
+                    m = re.match(r"^\s*([\-*•])\s+(.*)$", ln)
+                    content = m.group(2) if m else ln
+                    doc.add_paragraph(content, style="List Bullet")
+            else:
+                p = doc.add_paragraph()
+                for i, ln in enumerate(lines):
+                    if i:
+                        p.add_run("\n")
+                    p.add_run(ln)
+
+    # --- open template and CLEAR BODY ONCE (keep sectPr) ---
     doc = Document(str(template_path))
-
-    from copy import deepcopy
-
     body = doc.element.body
 
-    # Keep the section properties (<w:sectPr>) before clearing
     sectPr_el = None
     for child in list(body):
         if child.tag.endswith('sectPr'):
             sectPr_el = deepcopy(child)
         body.remove(child)
-
-    # Reattach the section (or create a new one) so doc.sections[0] is valid
     if sectPr_el is not None:
         body.append(sectPr_el)
 
-    # Safety net: if no sections, add one now
+    # ensure single section present
     if len(doc.sections) == 0:
         doc.add_section(WD_SECTION_START.NEW_PAGE)
 
+    # orientation helper
     def _set_orientation(section, orientation):
         section.orientation = orientation
         if orientation == WD_ORIENT.LANDSCAPE and section.page_width < section.page_height:
@@ -962,10 +1020,63 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         if orientation == WD_ORIENT.PORTRAIT and section.page_width > section.page_height:
             section.page_width, section.page_height = section.page_height, section.page_width
 
-    # Now it's safe to access and set orientation
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Cm
+
+    def _align_header_logo_right(section):
+        """
+        For the given section:
+        - Unlink header from previous so it can differ in landscape.
+        - Right-align all header paragraphs and text in header tables.
+        """
+        hdr = section.header
+        hdr.is_linked_to_previous = False
+
+        # Plain paragraphs in the header
+        for p in hdr.paragraphs:
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+        # If the template header uses a table, align text in all cells to the right
+        for tbl in hdr.tables:
+            for row in tbl.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+    # set first section portrait
     first_section = doc.sections[0]
     _set_orientation(first_section, WD_ORIENT.PORTRAIT)
 
+    # ---- Cover title: Project Design Document (centered, large, brand color) ----
+    title_par = doc.add_paragraph("Project Design Document")
+    title_par.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    title_run = title_par.runs[0]
+    title_run.bold = True
+    title_run.font.name = "Calibri"
+    title_run.font.size = Pt(16)
+    title_run.font.color.rgb = RGBColor(10, 47, 65)  # brand navy/teal
+
+    # optional spacer under title
+    title_par.paragraph_format.space_after = Pt(12)
+
+    # ---- Set heading sizes (these will hold if you don't force run sizes later) ----
+    try:
+        h1 = doc.styles['Heading 1'].font
+        h1.name = "Calibri"
+        h1.size = Pt(14)
+        h1.color.rgb = RGBColor(10, 47, 65)
+    except KeyError:
+        pass
+
+    try:
+        h2 = doc.styles['Heading 2'].font
+        h2.name = "Calibri"
+        h2.size = Pt(12)
+        h2.color.rgb = RGBColor(10, 47, 65)
+    except KeyError:
+        pass
+
+    # --- table/paragraph helpers (kept from your code) ---
     def _shade(cell, hex_fill):
         tcPr = cell._tc.get_or_add_tcPr()
         shd = OxmlElement("w:shd")
@@ -990,9 +1101,11 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         run.font.size = Pt(10)
         try:
             rpr = run._element.rPr
-            rpr.rFonts.set(qn("w:ascii"), "Calibri")
-            rpr.rFonts.set(qn("w:hAnsi"), "Calibri")
-            rpr.rFonts.set(qn("w:cs"), "Calibri")
+            rFonts = rpr.rFonts if rpr is not None else None
+            if rFonts is not None:
+                rFonts.set(qn("w:ascii"), "Calibri")
+                rFonts.set(qn("w:hAnsi"), "Calibri")
+                rFonts.set(qn("w:cs"), "Calibri")
         except Exception:
             pass
         if white:
@@ -1009,29 +1122,29 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         return section.page_width.cm - section.left_margin.cm - section.right_margin.cm
 
     def _h1(text_value):
-        paragraph = doc.add_paragraph(text_value)
-        paragraph.style = doc.styles['Heading 1']
-        return paragraph
+        p = doc.add_paragraph(text_value)
+        p.style = doc.styles['Heading 1']
+        return p
 
     def _new_landscape_section(title):
         section = doc.add_section(WD_SECTION_START.NEW_PAGE)
         _set_orientation(section, WD_ORIENT.LANDSCAPE)
+        _align_header_logo_right(section)
         _h1(title)
         return section
 
-    def _ensure_portrait_section(title):
+    def _new_portrait_section(title):
         section = doc.add_section(WD_SECTION_START.NEW_PAGE)
         _set_orientation(section, WD_ORIENT.PORTRAIT)
         _h1(title)
         return section
 
+    # (your gantt helper unchanged)
     def _gantt_png_buf():
         import matplotlib.pyplot as plt
-
         df = _workplan_df()
         if df.empty:
             return None
-
         height = min(1.2 + 0.35 * len(df), 12)
         fig, ax = plt.subplots(figsize=(11, height))
         _draw_gantt(ax, df, show_today=False)
@@ -1042,9 +1155,7 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         buffer.seek(0)
         return buffer
 
-    first_section = doc.sections[0]
-    _set_orientation(first_section, WD_ORIENT.PORTRAIT)
-
+    # ===== Project Overview =====
     _h1("Project Overview")
 
     id_info = st.session_state.get("id_info", {}) or {}
@@ -1081,20 +1192,16 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         overview_table.columns[idx].width = width
 
     for row_idx, (label, value) in enumerate(overview_rows):
-        # Left column: shaded + white text (same PRIMARY_SHADE used elsewhere)
         _set_cell_text(overview_table.cell(row_idx, 0), str(label), bold=True, white=True)
         _shade(overview_table.cell(row_idx, 0), PRIMARY_SHADE)
-
-        # Right column: normal
         _set_cell_text(overview_table.cell(row_idx, 1), _s(value))
 
-    # --- Project Detail (headings + rich text from session_state) ---
+    # ===== Project Detail =====
     PD = st.session_state.get("project_detail", {}) or {}
 
     doc.add_page_break()
     _h1("Project Detail")
 
-    # Order & labels shown as H2s, each followed by rendered HTML body
     DETAIL_ORDER = [
         ("Goal and Expected Impact", "goal_impact"),
         ("Summary", "summary"),
@@ -1106,14 +1213,16 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     ]
 
     for label, key in DETAIL_ORDER:
-        html_body = (PD.get(key) or "").strip()
-        if not html_body:
+        content = (PD.get(key) or "").strip()
+        if not content:
             continue
-        # Heading one level below "Project Detail"
-        doc.add_paragraph(label, style="Heading 2")
-        _render_quill_html(doc, html_body)
 
-    # Roles table under its own H2, if present
+        doc.add_paragraph(label, style="Heading 2")
+        if _looks_like_html(content):
+            _append_html(doc, content)
+        else:
+            _render_plain_to_doc(doc, content)
+
     roles_df = PD.get("roles_table")
     if roles_df is not None and not roles_df.empty:
         doc.add_paragraph("Roles & Responsibilities", style="Heading 2")
@@ -1123,16 +1232,14 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         for j, lab in enumerate(["Entity", "Description", "Role & responsibility"]):
             _set_cell_text(hdr.cells[j], lab, bold=True, white=True)
             _shade(hdr.cells[j], PRIMARY_SHADE)
-
         for _, r in roles_df.iterrows():
             row = t_roles.add_row()
             _set_cell_text(row.cells[0], str(r.get("Entity", "")))
             _set_cell_text(row.cells[1], str(r.get("Description", "")))
             _set_cell_text(row.cells[2], str(r.get("Role & responsibility", "")))
 
-    # --- Logframe ---
-    doc.add_page_break()
-    _h1("Logframe")
+    # ===== Logframe =====
+    logframe_section = _new_landscape_section("Logframe")
 
     goal = st.session_state.impacts[0] if st.session_state.get("impacts") else {}
     goal_text = goal.get("name", "")
@@ -1157,12 +1264,10 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
             _set_cell_text(hdr.cells[idx], lab, bold=True, white=True)
             _shade(hdr.cells[idx], PRIMARY_SHADE)
         _repeat_header(hdr)
-
         col_widths_goal = (Cm(12.0), Cm(12.0))
         for idx, width in enumerate(col_widths_goal):
             hdr.cells[idx].width = width
             tbl_goal.columns[idx].width = width
-
         body_row = tbl_goal.add_row()
         for idx, width in enumerate(col_widths_goal):
             body_row.cells[idx].width = width
@@ -1181,35 +1286,25 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
             _set_cell_text(hdr.cells[idx], lab, bold=True, white=True)
             _shade(hdr.cells[idx], PRIMARY_SHADE)
         _repeat_header(hdr)
-
         col_widths_outcome = (Cm(6.0), Cm(9.0), Cm(6.0), Cm(6.0))
         for idx, width in enumerate(col_widths_outcome):
             for row in tbl_outcome.rows:
                 row.cells[idx].width = width
             tbl_outcome.columns[idx].width = width
-
         row = tbl_outcome.add_row()
         for idx, width in enumerate(col_widths_outcome):
             row.cells[idx].width = width
-
         _set_cell_text(row.cells[0], outcome_text or "")
-
-        k_cell = row.cells[1]
-        k_cell.text = ""
+        k_cell = row.cells[1]; k_cell.text = ""
         para = k_cell.paragraphs[0]
         _add_run(para, f"Outcome KPI — {outcome_kpi.get('name','')}")
         para.add_run("\n")
         baseline = (outcome_kpi.get("baseline", "") or "").strip()
         if baseline:
-            _add_run(para, "Baseline: ", True)
-            _add_run(para, baseline)
-            para.add_run("\n")
+            _add_run(para, "Baseline: ", True); _add_run(para, baseline); para.add_run("\n")
         target = (outcome_kpi.get("target", "") or "").strip()
         if target:
-            _add_run(para, "Target: ", True)
-            _add_run(para, target)
-            para.add_run("\n")
-
+            _add_run(para, "Target: ", True); _add_run(para, target); para.add_run("\n")
         _set_cell_text(row.cells[2], (outcome_kpi.get("mov") or "").strip() or "—")
         _set_cell_text(row.cells[3], "—")
         doc.add_paragraph("")
@@ -1222,7 +1317,6 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         _set_cell_text(hdr.cells[idx], lab, bold=True, white=True)
         _shade(hdr.cells[idx], PRIMARY_SHADE)
     _repeat_header(hdr)
-
     col_widths_main = (Cm(6.0), Cm(9.0), Cm(6.0), Cm(6.0))
     for idx, width in enumerate(col_widths_main):
         for row in tbl.rows:
@@ -1256,29 +1350,21 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
             row = tbl.add_row()
             for idx, width in enumerate(col_widths_main):
                 row.cells[idx].width = width
-
             label = f"KPI {kpi_nums.get(kpi.get('id'), '')}".strip()
             name = kpi.get("name", "")
-            k_cell = row.cells[1]
-            k_cell.text = ""
+            k_cell = row.cells[1]; k_cell.text = ""
             para = k_cell.paragraphs[0]
             if label and name:
                 _add_run(para, f"{label} — {name}")
             else:
                 _add_run(para, name or label)
             para.add_run("\n")
-
             baseline = (kpi.get("baseline") or "").strip()
             if baseline:
-                _add_run(para, "Baseline: ", True)
-                _add_run(para, baseline)
-                para.add_run("\n")
+                _add_run(para, "Baseline: ", True); _add_run(para, baseline); para.add_run("\n")
             target = (kpi.get("target") or "").strip()
             if target:
-                _add_run(para, "Target: ", True)
-                _add_run(para, target)
-                para.add_run("\n")
-
+                _add_run(para, "Target: ", True); _add_run(para, target); para.add_run("\n")
             mov = (kpi.get("mov") or "").strip()
             _set_cell_text(row.cells[2], mov or "—")
             _set_cell_text(row.cells[3], _assumptions_doc_text(kpi.get("assumptions")) or "—")
@@ -1295,8 +1381,7 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
 
     doc.add_paragraph("")
 
-    # --- Workplan ---
-    workplan_section = _new_landscape_section("Workplan")
+    # ===== Workplan =====
     df_wp = _workplan_df()
     if df_wp.empty:
         doc.add_paragraph("No activities defined yet.")
@@ -1307,76 +1392,49 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         df_wp["Start"] = df_wp["Start"].fillna("")
         df_wp["End"] = df_wp["End"].fillna("")
 
-        col_widths_act = (Cm(5.5), Cm(6.4), Cm(4.6), Cm(3.0), Cm(3.0))
-        t_act = doc.add_table(rows=1, cols=5)
+        # Sort by start date then Activity label (no grouping)
+        df_wp = df_wp.sort_values(["ActivityLabel", "Start"], kind="stable")
+
+        # 4 columns: Activity | Owner | Start date | End date
+        col_widths_act = (Cm(14.0), Cm(5.0), Cm(3), Cm(3))
+        t_act = doc.add_table(rows=1, cols=4)
         t_act.style = "Table Grid"
         t_act.alignment = WD_TABLE_ALIGNMENT.LEFT
+
         hdr = t_act.rows[0]
-        for idx, lab in enumerate(("Output", "Activity", "Owner", "Start date", "End date")):
+        for idx, lab in enumerate(("Activity", "Owner", "Start date", "End date")):
             _set_cell_text(hdr.cells[idx], lab, bold=True, white=True)
             _shade(hdr.cells[idx], PRIMARY_SHADE)
         _repeat_header(hdr)
+
         for idx, width in enumerate(col_widths_act):
             for row in t_act.rows:
                 row.cells[idx].width = width
             t_act.columns[idx].width = width
 
-        out_nums_map, _ = compute_numbers()
-        name_to_num = {}
-        for output in st.session_state.get("outputs", []):
-            name_to_num[output.get("name")] = out_nums_map.get(output.get("id"))
-
-        grouped = df_wp.groupby("Output")
-        for out_name, subset in grouped:
-            subset = subset.sort_values("ActivityLabel")
-            start_row = len(t_act.rows)
-            for _, activity_row in subset.iterrows():
-                row = t_act.add_row()
-                for idx, width in enumerate(col_widths_act):
-                    row.cells[idx].width = width
-                _set_cell_text(row.cells[1], str(activity_row["ActivityLabel"]))
-                owner_val = activity_row.get("Owner", "")
-                if isinstance(owner_val, float):
-                    try:
-                        from math import isnan
-                        if isnan(owner_val):
-                            owner_val = ""
-                    except Exception:
-                        owner_val = ""
-                owner_text = str(owner_val).strip()
-                if not owner_text or owner_text.lower() == "nan":
-                    owner_text = "—"
-                _set_cell_text(row.cells[2], owner_text)
-                _set_cell_text(row.cells[3], activity_row["Start"] or "")
-                _set_cell_text(row.cells[4], activity_row["End"] or "")
-            end_row = len(t_act.rows) - 1
-            if end_row >= start_row:
-                merged = t_act.cell(start_row, 0).merge(t_act.cell(end_row, 0))
-                num = name_to_num.get(out_name, "")
-                if num and out_name:
-                    label = f"Output {num} — {out_name}"
-                elif num:
-                    label = f"Output {num}"
-                else:
-                    label = out_name or "Output"
-                _set_cell_text(merged, label)
+        for _, r in df_wp.iterrows():
+            row = t_act.add_row()
+            for idx, width in enumerate(col_widths_act):
+                row.cells[idx].width = width
+            _set_cell_text(row.cells[0], str(r["ActivityLabel"]))
+            owner_val = str(r.get("Owner", "") or "").strip()
+            owner_val = "—" if not owner_val or owner_val.lower() == "nan" else owner_val
+            _set_cell_text(row.cells[1], owner_val)
+            _set_cell_text(row.cells[2], r["Start"] or "")
+            _set_cell_text(row.cells[3], r["End"] or "")
 
     doc.add_paragraph("")
 
-    width_cm = _content_width_cm(workplan_section)
+    gantt_section = _new_landscape_section("Workplan")
+
+    width_cm = _content_width_cm(logframe_section)
     gantt_source = gantt_image_path or None
     if gantt_source is None:
         try:
             gantt_source = _gantt_png_buf()
         except Exception:
             gantt_source = None
-
     if gantt_source:
-        try:
-            heading_style = doc.styles['Heading 2']
-        except KeyError:
-            heading_style = doc.styles['Heading 1']
-        doc.add_paragraph("Workplan Gantt", style=heading_style)
         try:
             from pathlib import Path as _Path
             pic_source = str(gantt_source) if isinstance(gantt_source, (str, _Path)) else gantt_source
@@ -1386,7 +1444,7 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
 
     doc.add_paragraph("")
 
-    # --- Budget ---
+    # ===== Budget =====
     _new_landscape_section("Budget")
     bt = doc.add_table(rows=1, cols=8)
     bt.style = "Table Grid"
@@ -1397,7 +1455,6 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         _set_cell_text(bh.cells[idx], lab, bold=True, white=True)
         _shade(bh.cells[idx], PRIMARY_SHADE)
     _repeat_header(bh)
-
     colw = (Cm(5.2), Cm(5.5), Cm(3.8), Cm(4.2), Cm(2.8), Cm(3.2), Cm(2.8), Cm(3.4))
     for idx, width in enumerate(colw):
         for row in bt.rows:
@@ -1406,7 +1463,6 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
 
     _, _, act_nums = compute_numbers(include_activities=True)
     act_lookup = activity_label_map(act_nums)
-
     total_budget = 0.0
     for budget_row in st.session_state.get("budget", []):
         row = bt.add_row()
@@ -1417,29 +1473,22 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         _set_cell_text(row.cells[2], budget_row.get("category", ""))
         _set_cell_text(row.cells[3], budget_row.get("subcategory", ""))
         _set_cell_text(row.cells[4], budget_row.get("unit", ""))
-
         unit_cost = float(budget_row.get("unit_cost") or 0.0)
-        quantity = float(budget_row.get("qty") or 0.0)
-        total = float(budget_row.get("total_usd") or (unit_cost * quantity) or 0.0)
+        quantity  = float(budget_row.get("qty") or 0.0)
+        total     = float(budget_row.get("total_usd") or (unit_cost * quantity) or 0.0)
         total_budget += total
-
         _set_cell_text(row.cells[5], f"{unit_cost:,.2f}")
         _set_cell_text(row.cells[6], f"{quantity:,.2f}")
         _set_cell_text(row.cells[7], f"{total:,.2f}")
 
-    para = doc.add_paragraph()
-    para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    run = para.add_run(f"Total budget: USD {total_budget:,.2f}")
-    run.bold = True
+    para = doc.add_paragraph(); para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    run = para.add_run(f"Total budget: USD {total_budget:,.2f}"); run.bold = True
 
-    note = doc.add_paragraph()
-    note_run = note.add_run(footer_note)
-    note_run.italic = True
+    note = doc.add_paragraph(); note_run = note.add_run("Note: All monetary values are in USD and will be converted to AED in the official project agreement."); note_run.italic = True
 
-    # --- Disbursement Schedule ---
-    _ensure_portrait_section("Disbursement Schedule")
+    # ===== Disbursement Schedule =====
+    _new_portrait_section("Disbursement Schedule")
     from datetime import date as _date
-
     dsp_src = list(st.session_state.get("disbursement", []))
     out_nums_map, _ = compute_numbers()
     id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
@@ -1471,7 +1520,6 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         _set_cell_text(hdr.cells[idx], lab, bold=True, white=True)
         _shade(hdr.cells[idx], PRIMARY_SHADE)
     _repeat_header(hdr)
-
     disb_widths = (Cm(3.5), Cm(4.0), Cm(3.5), Cm(7.0), Cm(3.0))
     for idx, width in enumerate(disb_widths):
         for row in t_disb.rows:
@@ -1498,41 +1546,50 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
         _set_cell_text(row.cells[3], "No disbursements defined.")
         _set_cell_text(row.cells[4], "")
 
-    assumption_rows = []
-    if goal_assumptions_text:
-        assumption_rows.append(("Goal", goal_assumptions_text))
-    for outcome in st.session_state.get("outcomes", []):
-        text_value = _assumptions_doc_text(outcome.get("assumptions"))
-        if text_value:
-            assumption_rows.append((f"Outcome — {outcome.get('name','')}", text_value))
-    for output in st.session_state.get("outputs", []):
-        text_value = _assumptions_doc_text(output.get("assumptions"))
-        if text_value:
-            label = f"Output {out_nums.get(output.get('id'), '')} — {output.get('name','')}".strip(" —")
-            assumption_rows.append((label or "Output", text_value))
+    # ===== Risk Assessment =====
+    import pandas as _pd
+    _new_portrait_section("Risk Assessment")
+    rdf = st.session_state.get("risk_df")
+    if rdf is None:
+        rdf = _pd.DataFrame(st.session_state.get("risks", []))
 
-    if assumption_rows:
-        doc.add_paragraph("")
-        try:
-            heading_style = doc.styles['Heading 2']
-        except KeyError:
-            heading_style = doc.styles['Heading 1']
-        doc.add_paragraph("Assumptions", style=heading_style)
-        tbl_ass = doc.add_table(rows=len(assumption_rows), cols=2)
-        tbl_ass.style = "Table Grid"
-        tbl_ass.alignment = WD_TABLE_ALIGNMENT.LEFT
-        for idx, width in enumerate((Cm(5.0), Cm(11.0))):
-            for row in tbl_ass.rows:
-                row.cells[idx].width = width
-            tbl_ass.columns[idx].width = width
-        for row_idx, (label, text_value) in enumerate(assumption_rows):
-            _set_cell_text(tbl_ass.cell(row_idx, 0), label, bold=True)
-            _set_cell_text(tbl_ass.cell(row_idx, 1), text_value)
+    # Clean for export only (don’t mutate UI state)
+    rdf = rdf.copy()
+    rdf["Probability"] = rdf["Probability"].astype(str).str.strip().str.title()
+    rdf["Impact"] = rdf["Impact"].astype(str).str.strip().str.title()
+    # keep rows users actually filled; blanks are allowed elsewhere
+    rdf = rdf.dropna(how="all", subset=["Risk", "Mitigation", "Owner"])
 
-    note = doc.add_paragraph()
-    note_run = note.add_run(footer_note)
-    note_run.italic = True
+    if not rdf.empty:
+        rt = doc.add_table(rows=1, cols=5)
+        rt.style = "Table Grid"
+        rt.alignment = WD_TABLE_ALIGNMENT.LEFT
+        hdr = rt.rows[0]
 
+        headers = ("Risk", "Probability", "Impact", "Mitigation", "Owner")
+        for j, lab in enumerate(headers):
+            _set_cell_text(hdr.cells[j], lab, bold=True, white=True)
+            _shade(hdr.cells[j], PRIMARY_SHADE)
+        _repeat_header(hdr)
+
+        from docx.shared import Cm
+        widths = (Cm(7.5), Cm(3.4), Cm(3.4), Cm(8.0), Cm(4.0))
+        for j, w in enumerate(widths):
+            for row in rt.rows:
+                row.cells[j].width = w
+            rt.columns[j].width = w
+
+        for _, r in rdf.fillna("").iterrows():
+            row = rt.add_row()
+            for j, w in enumerate(widths):
+                row.cells[j].width = w
+            _set_cell_text(row.cells[0], r["Risk"])
+            _set_cell_text(row.cells[1], r["Probability"])
+            _set_cell_text(row.cells[2], r["Impact"])
+            _set_cell_text(row.cells[3], r["Mitigation"])
+            _set_cell_text(row.cells[4], r["Owner"])
+
+    # normalize fonts (make sure your helper doesn't reset run sizes)
     _force_calibri_everywhere(doc)
 
     buffer = BytesIO()
@@ -1552,7 +1609,6 @@ def view_activity_readonly(a, label, id_to_output, id_to_kpi):
         f"<div class='lf-line'><b>Output:</b> {escape(out_name)}</div>"
         f"<div class='lf-line'><b>Owner:</b> {escape(a.get('owner','') or '—')}</div>"
         f"<div class='lf-line'><b>Start date:</b> {sd} &nbsp;&nbsp;•&nbsp;&nbsp; <b>End date:</b> {ed}</div>"
-        f"<div class='lf-line'><b>Linked KPIs:</b> {escape(kpis_txt)}</div>"
     )
 
     return view_logframe_element(body, kind="activity")
@@ -2019,7 +2075,7 @@ Please complete each section of your project:
 4. **Budget** – Add **Budget lines** linked to Activities.
 5. **Disbursement Schedule** – Add **KPI-Linked Milestones** with dates and amounts.
 6. **Export** – Use the export tools as follows:
-   - **Create a backup file (Excel):** You can do this at any stage to save your progress and continue working later.
+   - **Create a backup file (Excel):** Use this option periodically to save your progress locally. It creates an Excel backup file on your computer, allowing you to safely store your work and continue later if needed.
    - **Generate a Project Design Document (Word):** Create a formatted project document to review how your application looks in report form.
    - **Generate a Project Package (ZIP):** At the final stage you will create a password-protected ZIP file for submission to GLIDE. *This feature is planned but not yet available in the portal.*
 """
@@ -2185,22 +2241,6 @@ Please complete each section of your project:
                     # ---------- 3) Persist to session ----------
                     st.session_state.setdefault("project_detail", {})
                     st.session_state.project_detail.update(pd_state)
-
-                    # --- Prime widget keys so imported text appears in Project Detail tab ---
-                    # Reset Project Detail widget states so they re-seed from imported text
-                    for k in [
-                        "goal_impact",
-                        "summary",
-                        "detailed_description",
-                        "alignment",
-                        "ownership_sustainability",
-                        "reporting_me",
-                        "comms_publicity",
-                    ]:
-                        st.session_state.pop(f"pd_q_{k}", None)  # remove widget state if it exists
-
-                    # also reset the roles editor widget key (we use a versioned key anyway)
-                    st.session_state.pop("pd_roles_editor", None)
 
                 # ---- KPI Matrix (ID-based) ----
                 if "KPI Matrix" in xls.sheet_names:
@@ -2427,6 +2467,41 @@ Please complete each section of your project:
                     st.session_state["id_contact_name"] = id_info["contact_name"]
                     st.session_state["id_contact_email"] = id_info["contact_email"]
                     st.session_state["id_contact_phone"] = id_info["contact_phone"]
+
+                # ---- Risk Assessment import (Excel → app state)
+                if "Risk Assessment" in xls.sheet_names:
+                    try:
+                        rdf = pd.read_excel(xls, sheet_name="Risk Assessment", dtype=str).fillna("")
+                        # normalize headers
+                        rdf.columns = [str(c).strip() for c in rdf.columns]
+
+                        want = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
+                        missing = [c for c in want if c not in rdf.columns]
+                        if not missing:
+                            # map plain levels back to your emoji labels (if your Excel has plain text)
+                            def _to_emoji(val: str) -> str:
+                                s = (val or "").strip().lower()
+                                if s == "low":    return "🟢 Low"
+                                if s == "medium": return "🟡 Medium"
+                                if s == "high":   return "🔴 High"
+                                # already emoji, empty, or anything else → keep as is
+                                return val or ""
+
+                            rdf = rdf.reindex(columns=want).copy()
+                            rdf["Probability"] = rdf["Probability"].map(_to_emoji)
+                            rdf["Impact"] = rdf["Impact"].map(_to_emoji)
+
+                            # keep only meaningful rows (optional; you can skip if you want raw)
+                            # rdf = rdf.dropna(how="all", subset=["Risk","Mitigation","Owner"]).fillna("")
+
+                            # 👇 seed the table for the UI
+                            st.session_state["risk_df"] = rdf
+
+                            # Optional: clear the widget’s last value so it picks up the new seed next render
+                            # (only needed if the table was already open on screen)
+                            st.session_state.pop("risk_editor", None)
+                    except Exception as e:
+                        st.warning(f"Could not import 'Risk Assessment' sheet: {e}")
 
                 # Remember we loaded this file content; prevents re-import on button clicks
                 st.session_state["_resume_file_sig"] = file_sig
@@ -2666,10 +2741,11 @@ def render_project_detail():
     PD = st.session_state["project_detail"]
 
     def _rbox(key: str, label: str, help_text: str, *, height: int | None = None, **_ignored):
+        """Simple free-text editor (Streamlit text_area), mirroring Project Overview style."""
         PD = st.session_state.setdefault("project_detail", {})
-        initial_html = (PD.get(key) or "").strip()
+        stored = (PD.get(key) or "").strip()
 
-        # Label with subtle hover tooltip (no caption; avoids duplication)
+        # Label + tooltip (same visual you already use)
         if help_text:
             st.markdown(
                 f"""
@@ -2684,32 +2760,67 @@ def render_project_detail():
         else:
             st.markdown(f"**{html.escape(label)}**")
 
-        val = quill_html(
-            widget_key=f"pd_q_{key}",
-            initial_html=(PD.get(key) or "").strip(),
-            placeholder="",
-            toolbar=True,
+        # Versioned key so a fresh import reseeds the widget correctly
+        version = st.session_state.get("_resume_file_sig", "")
+        new_val = st.text_area(
+            label="",
+            value=stored,
+            key=f"pd_ta_{key}__{version}",
+            height=height or 180,
         )
-        if val != initial_html:
-            PD[key] = val
+
+        # Persist only on change
+        if new_val != stored:
+            PD[key] = (new_val or "").strip()
+
+    # pip install streamlit-quill bleach
+    from streamlit_quill import st_quill
+    import streamlit as _st, bleach
+
+    ALLOWED_TAGS = ["p", "br", "strong", "em", "u", "s", "ul", "ol", "li", "blockquote", "a", "h1", "h2", "h3", "code",
+                    "pre", "span"]
+    ALLOWED_ATTRS = {"a": ["href", "title", "target"], "span": ["style"]}
+
+    def rbox_rich(key, label, help_text="", placeholder="Type here…"):
+        PD = st.session_state.setdefault("project_detail", {})
+        stored = PD.get(key, "")
+
+        # Built-in tooltip (no custom HTML needed)
+        st.markdown(f"**{label}**", help=help_text)
+
+        version = st.session_state.get("_resume_file_sig", "")
+        html_val = st_quill(
+            html=True,
+            value=stored,
+            key=f"pd_quill_{key}__{version}",
+            placeholder=placeholder,
+            toolbar=True,
+        ) or ""
+
+        # sanitize or just save
+        try:
+            clean = bleach.clean(html_val, tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRS, strip=True)
+        except Exception:
+            clean = html_val
+        if clean != stored:
+            PD[key] = clean
 
     # 1) Goal and Expected Impact
-    _rbox(
+    rbox_rich(
         "goal_impact",
         "Goal and Expected Impact",
         "Outline the Goal of the project and its expected impact on disease elimination.",
     )
 
     # 2) Summary
-    _rbox(
+    rbox_rich(
         "summary",
         "Summary",
         "Provide a brief summary of the project.",
-        height=120,
     )
 
     # 3) Detailed Description
-    _rbox(
+    rbox_rich(
         "detailed_description",
         "Detailed Description",
         "Provide a more detailed description of the project and context including the issue or gap "
@@ -2718,41 +2829,35 @@ def render_project_detail():
             "outcome. For each output, describe its purpose, the main activities that will deliver it. Clearly explain "
             "how success will be measured through the identified KPIs and how the planned activities and resources "
             "justify the proposed budget. This section should demonstrate the internal logic of the project - "
-            "showing how inputs, activities, and outputs collectively drive progress toward the desired impact."
-        ,
-        height=220,
+            "showing how inputs, activities, and outputs collectively drive progress toward the desired impact.",
     )
 
     # 4) Alignment with National and International Priorities
-    _rbox(
+    rbox_rich(
         "alignment",
         "Alignment with National and International Priorities",
         "Describe alignment with national strategies/policies/action plans and international commitments (e.g., SDGs, WHO roadmaps).",
-        height=160,
     )
 
     # 5) National Ownership & Sustainability
-    _rbox(
+    rbox_rich(
         "ownership_sustainability",
         "National Ownership and Sustainability",
         "Describe local stakeholder engagement/leadership and how benefits/impact will be sustained beyond the grant.",
-        height=160,
     )
 
     # 6) Reporting, Monitoring and Evaluation
-    _rbox(
+    rbox_rich(
         "reporting_me",
         "Reporting, Monitoring and Evaluation",
         "Outline reporting requirements (frequency/types), expectations for financial reporting, periodic updates, and the final report.",
-        height=160,
     )
 
     # 7) Communications and Publicity
-    _rbox(
+    rbox_rich(
         "comms_publicity",
         "Communications and Publicity",
         "Outline the visibility/communications plan, branding requirements, media engagement, and expected contributions to partners’ visibility, with indicative timelines.",
-        height=160,
     )
 
     st.markdown("### Roles & Responsibilities")
@@ -3495,7 +3600,37 @@ def render_disbursement():
                 row["amount_usd"] = float(new_amt)
     st.caption(footer_note)
 
-# ===== TAB 8: Export =====
+# ===== TAB 8: Risk Assessment =====
+def render_risk_assessment():
+    import pandas as pd
+    import streamlit as st
+
+    PROB = ["", "🟢 Low", "🟡 Medium", "🔴 High"]
+    IMP  = ["", "🟢 Low", "🟡 Medium", "🔴 High"]
+
+    # 👇 seed from Excel-imported DF if available; else empty
+    seed = st.session_state.get("risk_df")
+    if seed is None:
+        seed = pd.DataFrame(columns=["Risk", "Probability", "Impact", "Mitigation", "Owner"])
+
+    column_config = {
+        "Probability": st.column_config.SelectboxColumn("Probability", options=PROB, required=False),
+        "Impact":      st.column_config.SelectboxColumn("Impact",      options=IMP,  required=False),
+    }
+
+    edited_df = st.data_editor(
+        seed,
+        num_rows="dynamic",
+        column_config=column_config,
+        hide_index=True,
+        use_container_width=True,
+        key="risk_editor",
+    )
+
+    # persist latest for exports / future renders
+    st.session_state["risk_df"] = edited_df
+
+# ===== TAB 9: Export =====
 def render_export():
     st.header("📤 Export Your Application")
 
@@ -3654,6 +3789,62 @@ def render_export():
             r[1].number_format = 'DD/mmm/YYYY'
             r[3].number_format = '#,##0.00'
 
+        # --- Sheet 8: Risk Assessment ---
+        import pandas as _pd
+
+        risk_df = st.session_state.get("risk_df")
+        if risk_df is None:
+            risk_df = _pd.DataFrame()
+
+        # ✅ Normalize header names and ensure expected structure
+        want = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
+        rdf = (risk_df.rename(columns=lambda c: str(c).strip())
+               .reindex(columns=want, fill_value="")
+               .fillna("")
+               .copy())
+
+        # ✅ Clean emoji icons for Word readability
+        def _strip_emoji(v: str) -> str:
+            s = str(v or "").strip()
+            return (s.replace("🟢", "").replace("🟡", "").replace("🔴", "")).strip()
+
+        rdf["Probability"] = rdf["Probability"].map(_strip_emoji).str.title()
+        rdf["Impact"] = rdf["Impact"].map(_strip_emoji).str.title()
+
+        # ✅ Skip if no data (prevent empty table crash)
+        if not rdf.empty:
+            # _ensure_portrait_section("Risk Assessment")
+
+            rt = doc.add_table(rows=1, cols=5)
+            rt.style = "Table Grid"
+            hdr = rt.rows[0]
+
+            headers = ("Risk", "Probability", "Impact", "Mitigation", "Owner")
+            for j, lab in enumerate(headers):
+                _set_cell_text(hdr.cells[j], lab, bold=True, white=True)
+                _shade(hdr.cells[j], PRIMARY_SHADE)
+            _repeat_header(hdr)
+
+            from docx.shared import Cm
+            widths = (Cm(7.5), Cm(2.8), Cm(2.8), Cm(8.5), Cm(4.0))
+            for j, w in enumerate(widths):
+                for row in rt.rows:
+                    row.cells[j].width = w
+                rt.columns[j].width = w
+
+            for _, r in rdf.iterrows():
+                # Skip rows completely blank
+                if not any([r["Risk"], r["Mitigation"], r["Owner"]]):
+                    continue
+                row = rt.add_row()
+                for j, w in enumerate(widths):
+                    row.cells[j].width = w
+                _set_cell_text(row.cells[0], r["Risk"])
+                _set_cell_text(row.cells[1], r["Probability"])
+                _set_cell_text(row.cells[2], r["Impact"])
+                _set_cell_text(row.cells[3], r["Mitigation"])
+                _set_cell_text(row.cells[4], r["Owner"])
+
         # download
         buf = BytesIO()
         wb.save(buf)
@@ -3684,13 +3875,14 @@ def render_export():
 
 # ---- Tab registration ----
 reg = TabRegistry()
-reg.register(Tab(key="welcome", label="📘 Welcome & Instructions", render=render_welcome))
+reg.register(Tab(key="welcome", label="📘 Welcome", render=render_welcome))
 reg.register(Tab(key="overview", label="🪪 Project Overview", render=render_overview))
 reg.register(Tab(key="project_detail", label="📋 Project Detail", render=render_project_detail))
 reg.register(Tab(key="logframe", label="🧱 Logframe", render=render_logframe))
 reg.register(Tab(key="workplan", label="🗂️ Workplan", render=render_workplan))
 reg.register(Tab(key="budget", label="💵 Budget", render=render_budget))
 reg.register(Tab(key="disbursement", label="💸 Disbursement Schedule", render=render_disbursement))
+reg.register(Tab(key="risk", label="⚠️ Risk Assessment", render=render_risk_assessment))
 reg.register(Tab(key="export", label="📤 Export", render=render_export))
 
 # ---- Build Streamlit tabs ----
