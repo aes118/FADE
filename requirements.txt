@@ -1,6 +1,6 @@
 # Core web app
 streamlit>=1.33
-streamlit-quill
+streamlit-quill==0.0.3
 bleach>=6.1.0            # HTML sanitizer used with Quill
 
 # Data handling
