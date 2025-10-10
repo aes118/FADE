@@ -18,6 +18,9 @@ from docx.enum.section import WD_ORIENT, WD_SECTION_START
 from docx.shared import Pt
 from docx.oxml.ns import qn
 from tabs_registry import Tab, TabRegistry
+import json, hmac, hashlib, uuid
+from io import BytesIO
+
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Falcon Awards Project Portal", layout="wide")
@@ -639,7 +642,6 @@ def _force_calibri_everywhere(doc, body_size_pt: int = 11):
     for p in doc.paragraphs:
         for run in p.runs:
             run.font.name = "Calibri"
-            # run.font.size = Pt(body_size_pt)  # <-- DON'T: let styles control size
 
     for tbl in doc.tables:
         for row in tbl.rows:
@@ -647,7 +649,130 @@ def _force_calibri_everywhere(doc, body_size_pt: int = 11):
                 for p in cell.paragraphs:
                     for run in p.runs:
                         run.font.name = "Calibri"
-                        # run.font.size = Pt(body_size_pt)  # <-- DON'T
+
+# --- Secrets + crypto helpers ---
+def _secret_bytes(name: str) -> bytes:
+    val = st.secrets.get(name)
+    if not val:
+        return b""
+    return val.encode("utf-8") if isinstance(val, str) else bytes(val)
+
+def _sha256_hex(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+def _hmac_hex(payload: bytes) -> str:
+    key = _secret_bytes("SUBMISSION_HMAC_KEY")
+    if not key:
+        raise RuntimeError("Missing SUBMISSION_HMAC_KEY in secrets.")
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+# --- Canonical state snapshot (compact + stable ordering) ---
+def build_state_json_bytes() -> bytes:
+    """
+    Serialize the app state to canonical JSON (sorted keys, compact)
+    and safely handle dates, datetimes, pandas/NumPy types, and Decimals.
+    """
+    import datetime as _dt
+    from decimal import Decimal
+
+    # lazy imports so this works even if pandas/numpy aren't loaded
+    try:
+        import pandas as _pd
+    except Exception:
+        _pd = None
+    try:
+        import numpy as _np
+    except Exception:
+        _np = None
+
+    def _json_default(o):
+        # Dates/times → ISO 8601
+        if isinstance(o, (_dt.date, _dt.datetime)):
+            return o.isoformat()
+        if _pd is not None and isinstance(o, getattr(_pd, "Timestamp", ())):
+            return o.isoformat()
+
+        # Decimals → float
+        if isinstance(o, Decimal):
+            return float(o)
+
+        # NumPy scalars → native Python
+        if _np is not None and isinstance(o, getattr(_np, "generic", ())):
+            return o.item()
+
+        # Sets → lists
+        if isinstance(o, set):
+            return list(o)
+
+        # Fallback: string representation (last resort)
+        return str(o)
+
+    payload = {
+        "id_info":      st.session_state.get("id_info", {}),
+        "impacts":      st.session_state.get("impacts", []),
+        "outcomes":     st.session_state.get("outcomes", []),
+        "outputs":      st.session_state.get("outputs", []),
+        "kpis":         st.session_state.get("kpis", []),
+        "workplan":     st.session_state.get("workplan", []),        # contains dates
+        "budget":       st.session_state.get("budget", []),
+        "disbursement": st.session_state.get("disbursement", []),    # contains dates
+        "risks":        st.session_state.get("risks", []),
+    }
+
+    s = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=_json_default)
+    return s.encode("utf-8")
+
+# --- Manifest builder (hashes of each file) ---
+def make_manifest(files: dict, *, submission_id: str) -> bytes:
+    entries = [{"name": n, "size": len(b), "sha256": _sha256_hex(b)} for n, b in files.items()]
+    m = {"submission_id": submission_id, "files": entries, "app_version": "v1"}
+    return json.dumps(m, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+# --- Word bytes (you already have render_pdd()) ---
+def build_word_bytes() -> bytes:
+    return render_pdd().getvalue()
+
+def build_password_protected_bundle(include_excel: bool = True):
+    import pyzipper
+    pw = _secret_bytes("SUBMISSION_ZIP_PASSWORD")
+    if not pw:
+        raise RuntimeError("Missing SUBMISSION_ZIP_PASSWORD in secrets.")
+
+    submission_id = uuid.uuid4().hex[:12]
+
+    # Build artifacts
+    state_b = build_state_json_bytes()
+    docx_b  = build_word_bytes()
+    files = {
+        "Project_Design_Document.docx": docx_b,
+        "state.json": state_b,
+    }
+    if include_excel:
+        try:
+            xlsx_b = build_backup_excel_bytes()
+            files["Application_Submission.xlsx"] = xlsx_b
+        except Exception:
+            pass  # safe: still deliver ZIP with Word+state+manifest+signature
+
+    # Manifest + HMAC signature (tamper-evident)
+    manifest_b  = make_manifest(files, submission_id=submission_id)
+    signature_h = _hmac_hex(manifest_b)
+
+    # AES-256 encrypted ZIP (password stays in st.secrets)
+    buf = BytesIO()
+    with pyzipper.AESZipFile(buf, 'w',
+                             compression=pyzipper.ZIP_LZMA,
+                             encryption=pyzipper.WZ_AES) as zf:
+        zf.setpassword(pw)
+        zf.setencryption(pyzipper.WZ_AES, nbits=256)
+        for name, data in files.items():
+            zf.writestr(name, data)
+        zf.writestr("manifest.json", manifest_b)
+        zf.writestr("signature_hmac_sha256.txt", signature_h)
+
+    buf.seek(0)
+    return submission_id, buf.getvalue()
+
 
 def _render_budget_row_editor(rec: dict, rid: str, act_lookup: dict) -> None:
     """Standalone editor card for a single budget row (rid).
@@ -1655,7 +1780,6 @@ def render_pdd(context=None, gantt_image_path: str | None = None):
     buffer.seek(0)
     return buffer
 
-
 def view_activity_readonly(a, label, id_to_output, id_to_kpi):
     out_name = id_to_output.get(a.get("output_id"), "(unassigned)")
     kpis_txt = ", ".join(id_to_kpi.get(kid, "") for kid in (a.get("kpi_ids") or [])) or "—"
@@ -1670,7 +1794,6 @@ def view_activity_readonly(a, label, id_to_output, id_to_kpi):
     )
 
     return view_logframe_element(body, kind="activity")
-
 
 @contextmanager
 def lf_card_container(*extra_classes: str):
@@ -2134,7 +2257,7 @@ Please complete each section of your project:
 6. **Export** – Use the export tools as follows:
    - **Create a backup file (Excel):** Use this option periodically to save your progress locally. It creates an Excel backup file on your computer, allowing you to safely store your work and continue later if needed.
    - **Generate a Project Design Document (Word):** Create a formatted project document to review how your application looks in report form.
-   - **Generate a Project Package (ZIP):** At the final stage you will create a password-protected ZIP file for submission to GLIDE. *This feature is planned but not yet available in the portal.*
+   - **Generate a Project Package (ZIP):** At the final stage you will create a password-protected ZIP file for submission to GLIDE.
 """
     )  # ← this closes st.markdown() properly
 
@@ -3688,202 +3811,252 @@ def render_risk_assessment():
     st.session_state["risk_df"] = edited_df
 
 # ===== TAB 9: Export =====
+
+def build_backup_excel_bytes() -> bytes:
+    """
+    Builds the exact same Excel you used to assemble inside render_export().
+    Only returns the bytes; it doesn't call any Streamlit UI.
+    """
+    from openpyxl import Workbook
+    from io import BytesIO
+
+    wb = Workbook()
+    if "Sheet" in wb.sheetnames:
+        wb.remove(wb["Sheet"])
+
+    # --- helpers / live data ---
+    def _sum_budget_for_export():
+        return sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
+
+    id_info = st.session_state.get("id_info", {}) or {}
+    proj_title = id_info.get("title", "")
+    pi_name = id_info.get("pi_name", "")
+    pi_email = id_info.get("pi_email", "")
+    implementing_partners = id_info.get("implementing_partners", "")
+    supporting_partners = id_info.get("supporting_partners", "")
+    start_date = id_info.get("start_date", "")
+    end_date = id_info.get("end_date", "")
+    location = id_info.get("location", "")
+    contact_name = id_info.get("contact_name", "")
+    contact_mail = id_info.get("contact_email", "")
+    contact_phone = id_info.get("contact_phone", "")
+
+    budget_total = _sum_budget_for_export()
+    outputs_count = len(st.session_state.get("outputs", []))
+    kpis_count = len(st.session_state.get("kpis", []))
+    activities_count = len(st.session_state.get("workplan", []))
+
+    # Sheet 1: Project Overview
+    ws_id = wb.create_sheet("Project Overview", 0)
+    ws_id.append(["Field", "Value"])
+    ws_id.append([LABELS["title"], proj_title])
+    ws_id.append([LABELS["pi_name"], pi_name])
+    ws_id.append([LABELS["pi_email"], pi_email])
+    ws_id.append([LABELS["implementing_partners"], implementing_partners])
+    ws_id.append([LABELS["supporting_partners"], supporting_partners])
+    ws_id.append([LABELS["start_date"], fmt_dd_mmm_yyyy(start_date)])
+    ws_id.append([LABELS["end_date"], fmt_dd_mmm_yyyy(end_date)])
+    ws_id.append([LABELS["location"], location])
+    ws_id.append([LABELS["contact_name"], contact_name])
+    ws_id.append([LABELS["contact_email"], contact_mail])
+    ws_id.append([LABELS["contact_phone"], contact_phone])
+    ws_id.append([LABELS["total_funding"], f"USD {budget_total:,.2f}"])
+    ws_id.append([LABELS["outputs_count"], outputs_count])
+    ws_id.append([LABELS["kpis_count"], kpis_count])
+    ws_id.append([LABELS["activities_count"], activities_count])
+
+    # --- Sheet 2: Project Detail ---
+    pd_state = st.session_state.get("project_detail", {})
+
+    ws_pd = wb.create_sheet("Project Detail", 1)  # insert right after Project Overview
+    ws_pd.append(["Field", "Value"])
+
+    def _row(label, key):
+        val = (pd_state.get(key) or "").strip()
+        ws_pd.append([label, val])
+
+    _row("Goal and Expected Impact", "goal_impact")
+    _row("Summary", "summary")
+    _row("Detailed Description", "detailed_description")
+    _row("Alignment with National and International Priorities", "alignment")
+    _row("National Ownership and Sustainability", "ownership_sustainability")
+    _row("Reporting, Monitoring and Evaluation", "reporting_me")
+    _row("Communications and Publicity", "comms_publicity")
+
+    # --- Roles & Responsibilities table ---
+    import pandas as _pd
+    roles_df = pd_state.get("roles_table")
+    ws_pd.append([])  # blank line
+    ws_pd.append(["Entity", "Description", "Role & responsibility"])
+
+    if isinstance(roles_df, _pd.DataFrame) and not roles_df.empty:
+        for _, r in roles_df.iterrows():
+            ws_pd.append([
+                str(r.get("Entity", "")),
+                str(r.get("Description", "")),
+                str(r.get("Role & responsibility", "")),
+            ])
+    else:
+        ws_pd.append(["", "", ""])
+
+    # Sheet 3: Summary
+    s1 = wb.create_sheet("Summary", 1)
+    s1.append(["RowLevel", "ID", "ParentID", "Text / Title", "Assumptions"])
+    for row in st.session_state.get("impacts", []):
+        s1.append(["Goal", row.get("id", ""), "", row.get("name", ""), row.get("assumptions", "")])
+    for row in st.session_state.get("outcomes", []):
+        s1.append(
+            ["Outcome", row.get("id", ""), row.get("parent_id", ""), row.get("name", ""), row.get("assumptions", "")])
+    for row in st.session_state.get("outputs", []):
+        s1.append(
+            ["Output", row.get("id", ""), row.get("parent_id", ""), row.get("name", ""), row.get("assumptions", "")])
+
+    # Sheet 4: KPI Matrix
+    s2 = wb.create_sheet("KPI Matrix")
+    s2.append(["KPIID", "Parent Level", "ParentID", "Parent (label)", "KPI", "Baseline", "Target", "Linked to Payment",
+               "Means of Verification"])
+    out_nums, kpi_nums = compute_numbers()
+    output_title = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
+    outcome_name = (st.session_state.outcomes[0]["name"] if st.session_state.outcomes else "")
+    for k in st.session_state.kpis:
+        plevel = k.get("parent_level", "Output")
+        pid = k.get("parent_id", "")
+        parent_label = f"Outcome — {outcome_name}" if plevel == "Outcome" else f"Output {out_nums.get(pid, '')} — {output_title.get(pid, '')}"
+        s2.append([
+            k.get("id", ""), plevel, pid, parent_label, k.get("name", ""),
+            k.get("baseline", ""), k.get("target", ""),
+            "Yes" if k.get("linked_payment") else "No", k.get("mov", "")
+        ])
+
+    # Sheet 5: Workplan
+    out_nums, kpi_nums, act_nums = compute_numbers(include_activities=True)
+    ws2 = wb.create_sheet("Workplan")
+    ws2.append(
+        ["Activity ID", "Activity #", "OutputID", "Output", "Activity", "Owner", "Start", "End", "Linked KPI IDs",
+         "Linked KPIs"])
+    id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
+    id_to_kpi = {k["id"]: (k.get("name") or "") for k in st.session_state.kpis}
+    for a in st.session_state.workplan:
+        ws2.append([
+            a.get("id", ""), act_nums.get(a["id"], ""), a.get("output_id", ""),
+            id_to_output.get(a.get("output_id"), ""), a.get("name", ""), a.get("owner", ""),
+            fmt_dd_mmm_yyyy(a.get("start")), fmt_dd_mmm_yyyy(a.get("end")),
+            ",".join(a.get("kpi_ids") or []),
+            ", ".join(id_to_kpi.get(i, "") for i in (a.get("kpi_ids") or [])),
+        ])
+
+    # Sheet 6: Budget
+    ws3 = wb.create_sheet("Budget")
+    ws3.append(["Linked Output", "Linked Activity", "Budget Line Item", "Cost Category", "Sub Category", "Unit",
+                "Unit Cost (USD)", "Quantity", "Total Cost (USD)"])
+    out_label = lambda oid: (f"Output {out_nums.get(oid, '')} — " + (
+        next((o.get('name', '') for o in st.session_state.outputs if o['id'] == oid), ""))).strip(" —")
+    act_lookup = {**activity_label_map(act_nums)}  # label by activity id
+
+    def act_label(aid):
+        return (act_lookup.get(aid, "") or "").strip(" —")
+
+    for r in st.session_state.get("budget", []):
+        ws3.append([
+            out_label(r.get("output_id")) if r.get("output_id") else "",
+            act_label(r.get("activity_id")) if r.get("activity_id") else "",
+            r.get("item", ""), r.get("category", ""), r.get("subcategory", ""), r.get("unit", ""),
+            float(r.get("unit_cost") or 0.0), float(r.get("qty") or 0.0), float(r.get("total_usd") or 0.0),
+        ])
+    for row in ws3.iter_rows(min_row=2):
+        row[6].number_format = '#,##0.00'
+        row[7].number_format = '#,##0.00'
+        row[8].number_format = '#,##0.00'
+
+    # Sheet 7: Disbursement Schedule
+    wsd = wb.create_sheet("Disbursement Schedule")
+    wsd.append(["KPIID", "Anticipated deliverable date", "Deliverable",
+                "Maximum Grant instalment payable on satisfaction of this deliverable (USD)"])
+    from datetime import date as _date
+    src = list(st.session_state.get("disbursement", [])) or [
+        {"kpi_id": k["id"], "output_id": k.get("parent_id"),
+         "anticipated_date": k.get("end_date") or k.get("start_date") or None, "deliverable": k.get("name", ""),
+         "amount_usd": 0.0}
+        for k in st.session_state.kpis if bool(k.get("linked_payment"))
+    ]
+    rows = sorted(src, key=lambda d: (d.get("output_id"), d.get("anticipated_date") or _date(2100, 1, 1),
+                                      d.get("deliverable") or ""))
+    for d in rows:
+        wsd.append([d.get("kpi_id") or "", d.get("anticipated_date") or None, d.get("deliverable") or "",
+                    float(d.get("amount_usd") or 0.0)])
+    for r in wsd.iter_rows(min_row=2):
+        r[1].number_format = 'DD/mmm/YYYY'
+        r[3].number_format = '#,##0.00'
+
+    # --- Sheet 8: Risk Assessment (Excel) ---
+    import pandas as _pd
+    risk_df = st.session_state.get("risk_df")
+    if risk_df is None:
+        risk_df = _pd.DataFrame()
+
+    want = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
+    rdf = (risk_df.rename(columns=lambda c: str(c).strip())
+           .reindex(columns=want, fill_value="")
+           .fillna("")
+           .copy())
+
+    def _strip_emoji(v: str) -> str:
+        s = str(v or "").strip()
+        return (s.replace("🟢", "").replace("🟡", "").replace("🔴", "")).strip()
+
+    rdf["Probability"] = rdf["Probability"].map(_strip_emoji).str.title()
+    rdf["Impact"] = rdf["Impact"].map(_strip_emoji).str.title()
+
+    ws_risk = wb.create_sheet("Risk Assessment")
+    ws_risk.append(want)
+    for _, r in rdf.iterrows():
+        if not any([r["Risk"], r["Mitigation"], r["Owner"]]):
+            continue
+        ws_risk.append([r["Risk"], r["Probability"], r["Impact"], r["Mitigation"], r["Owner"]])
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
 def render_export():
-    st.header("📤 Export Your Application")
+    # ========= Back up =========
+    st.markdown("""
+    <div style="background:#fafafa;padding:18px 22px;border-radius:10px;
+                margin-bottom:20px;border:1px solid #eee;">
+      <h3 style="margin-top:0;">💾 Back up Your Application</h3>
+      <p style="margin-top:-10px;color:#444;">
+        <strong>Save your work as an Excel file so you can pause and resume later.</strong><br>
+        This file contains all data you entered in the portal.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # --- Backup Excel ---
     if st.button("Generate Backup File (Excel)", key="btn_gen_excel"):
-        wb = Workbook()
-        if "Sheet" in wb.sheetnames:
-            wb.remove(wb["Sheet"])
+        try:
+            excel_bytes = build_backup_excel_bytes()
+            st.download_button(
+                "📥 Download Backup File (Excel)",
+                data=excel_bytes,
+                file_name="Application_Submission.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_excel"
+            )
+        except Exception as e:
+            st.error(f"Could not generate Excel: {e}")
 
-        # --- helpers / live data ---
-        def _sum_budget_for_export():
-            return sum(float(r.get("total_usd") or 0.0) for r in st.session_state.get("budget", []))
+    # ========= Export to Word =========
+    st.markdown("""
+    <div style="background:#fafafa;padding:18px 22px;border-radius:10px;
+                margin:28px 0 20px;border:1px solid #eee;">
+      <h3 style="margin-top:0;">🧾 Export to Word Form</h3>
+      <p style="margin-top:-10px;color:#444;">
+        <strong>Create a formatted Project Design Document (PDD) to review or share your draft.</strong> <br>
+        This file uses the official Word submission format.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
 
-        id_info = st.session_state.get("id_info", {}) or {}
-        proj_title = id_info.get("title", "")
-        pi_name = id_info.get("pi_name", "")
-        pi_email = id_info.get("pi_email", "")
-        implementing_partners = id_info.get("implementing_partners", "")
-        supporting_partners = id_info.get("supporting_partners", "")
-        start_date = id_info.get("start_date", "")
-        end_date = id_info.get("end_date", "")
-        location = id_info.get("location", "")
-        contact_name = id_info.get("contact_name", "")
-        contact_mail = id_info.get("contact_email", "")
-        contact_phone = id_info.get("contact_phone", "")
-
-        budget_total = _sum_budget_for_export()
-        outputs_count = len(st.session_state.get("outputs", []))
-        kpis_count = len(st.session_state.get("kpis", []))
-        activities_count = len(st.session_state.get("workplan", []))
-
-        # Sheet 1: Project Overview
-        ws_id = wb.create_sheet("Project Overview", 0)
-        ws_id.append(["Field", "Value"])
-        ws_id.append([LABELS["title"], proj_title])
-        ws_id.append([LABELS["pi_name"], pi_name])
-        ws_id.append([LABELS["pi_email"], pi_email])
-        ws_id.append([LABELS["implementing_partners"], implementing_partners])
-        ws_id.append([LABELS["supporting_partners"], supporting_partners])
-        ws_id.append([LABELS["start_date"], fmt_dd_mmm_yyyy(start_date)])
-        ws_id.append([LABELS["end_date"], fmt_dd_mmm_yyyy(end_date)])
-        ws_id.append([LABELS["location"], location])
-        ws_id.append([LABELS["contact_name"], contact_name])
-        ws_id.append([LABELS["contact_email"], contact_mail])
-        ws_id.append([LABELS["contact_phone"], contact_phone])
-        ws_id.append([LABELS["total_funding"], f"USD {budget_total:,.2f}"])
-        ws_id.append([LABELS["outputs_count"], outputs_count])
-        ws_id.append([LABELS["kpis_count"], kpis_count])
-        ws_id.append([LABELS["activities_count"], activities_count])
-
-        # --- Sheet 2: Project Detail ---
-        pd_state = st.session_state.get("project_detail", {})
-
-        ws_pd = wb.create_sheet("Project Detail", 1)  # insert right after Project Overview
-        ws_pd.append(["Field", "Value"])
-
-        def _row(label, key):
-            val = (pd_state.get(key) or "").strip()
-            ws_pd.append([label, val])
-
-        _row("Goal and Expected Impact", "goal_impact")
-        _row("Summary", "summary")
-        _row("Detailed Description", "detailed_description")
-        _row("Alignment with National and International Priorities", "alignment")
-        _row("National Ownership and Sustainability", "ownership_sustainability")
-        _row("Reporting, Monitoring and Evaluation", "reporting_me")
-        _row("Communications and Publicity", "comms_publicity")
-
-        # --- Roles & Responsibilities table ---
-        import pandas as _pd
-        roles_df = pd_state.get("roles_table")
-        ws_pd.append([])  # blank line
-        ws_pd.append(["Entity", "Description", "Role & responsibility"])
-
-        if isinstance(roles_df, _pd.DataFrame) and not roles_df.empty:
-            for _, r in roles_df.iterrows():
-                ws_pd.append([
-                    str(r.get("Entity", "")),
-                    str(r.get("Description", "")),
-                    str(r.get("Role & responsibility", "")),
-                ])
-        else:
-            ws_pd.append(["", "", ""])
-
-        # Sheet 3: Summary
-        s1 = wb.create_sheet("Summary", 1)
-        s1.append(["RowLevel", "ID", "ParentID", "Text / Title", "Assumptions"])
-        for row in st.session_state.get("impacts", []):
-            s1.append(["Goal", row.get("id", ""), "", row.get("name", ""), row.get("assumptions", "")])
-        for row in st.session_state.get("outcomes", []):
-            s1.append(["Outcome", row.get("id", ""), row.get("parent_id", ""), row.get("name", ""), row.get("assumptions", "")])
-        for row in st.session_state.get("outputs", []):
-            s1.append(["Output", row.get("id", ""), row.get("parent_id", ""), row.get("name", ""), row.get("assumptions", "")])
-
-        # Sheet 4: KPI Matrix
-        s2 = wb.create_sheet("KPI Matrix")
-        s2.append(["KPIID","Parent Level","ParentID","Parent (label)","KPI","Baseline","Target","Linked to Payment","Means of Verification"])
-        out_nums, kpi_nums = compute_numbers()
-        output_title = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
-        outcome_name = (st.session_state.outcomes[0]["name"] if st.session_state.outcomes else "")
-        for k in st.session_state.kpis:
-            plevel = k.get("parent_level", "Output")
-            pid = k.get("parent_id", "")
-            parent_label = f"Outcome — {outcome_name}" if plevel == "Outcome" else f"Output {out_nums.get(pid,'')} — {output_title.get(pid,'')}"
-            s2.append([
-                k.get("id",""), plevel, pid, parent_label, k.get("name",""),
-                k.get("baseline",""), k.get("target",""),
-                "Yes" if k.get("linked_payment") else "No", k.get("mov","")
-            ])
-
-        # Sheet 5: Workplan
-        out_nums, kpi_nums, act_nums = compute_numbers(include_activities=True)
-        ws2 = wb.create_sheet("Workplan")
-        ws2.append(["Activity ID","Activity #","OutputID","Output","Activity","Owner","Start","End","Linked KPI IDs","Linked KPIs"])
-        id_to_output = {o["id"]: (o.get("name") or "Output") for o in st.session_state.outputs}
-        id_to_kpi = {k["id"]: (k.get("name") or "") for k in st.session_state.kpis}
-        for a in st.session_state.workplan:
-            ws2.append([
-                a.get("id",""), act_nums.get(a["id"],""), a.get("output_id",""),
-                id_to_output.get(a.get("output_id"),""), a.get("name",""), a.get("owner",""),
-                fmt_dd_mmm_yyyy(a.get("start")), fmt_dd_mmm_yyyy(a.get("end")),
-                ",".join(a.get("kpi_ids") or []),
-                ", ".join(id_to_kpi.get(i,"") for i in (a.get("kpi_ids") or [])),
-            ])
-
-        # Sheet 6: Budget
-        ws3 = wb.create_sheet("Budget")
-        ws3.append(["Linked Output","Linked Activity","Budget Line Item","Cost Category","Sub Category","Unit","Unit Cost (USD)","Quantity","Total Cost (USD)"])
-        out_label = lambda oid: (f"Output {out_nums.get(oid,'')} — " + (next((o.get('name','') for o in st.session_state.outputs if o['id']==oid), ""))).strip(" —")
-        act_lookup = {**activity_label_map(act_nums)}  # label by activity id
-        def act_label(aid): return (act_lookup.get(aid,"") or "").strip(" —")
-        for r in st.session_state.get("budget", []):
-            ws3.append([
-                out_label(r.get("output_id")) if r.get("output_id") else "",
-                act_label(r.get("activity_id")) if r.get("activity_id") else "",
-                r.get("item",""), r.get("category",""), r.get("subcategory",""), r.get("unit",""),
-                float(r.get("unit_cost") or 0.0), float(r.get("qty") or 0.0), float(r.get("total_usd") or 0.0),
-            ])
-        for row in ws3.iter_rows(min_row=2):
-            row[6].number_format = '#,##0.00'
-            row[7].number_format = '#,##0.00'
-            row[8].number_format = '#,##0.00'
-
-        # Sheet 7: Disbursement Schedule
-        wsd = wb.create_sheet("Disbursement Schedule")
-        wsd.append(["KPIID","Anticipated deliverable date","Deliverable","Maximum Grant instalment payable on satisfaction of this deliverable (USD)"])
-        from datetime import date as _date
-        src = list(st.session_state.get("disbursement", [])) or [
-            {"kpi_id":k["id"],"output_id":k.get("parent_id"),"anticipated_date":k.get("end_date") or k.get("start_date") or None,"deliverable":k.get("name",""),"amount_usd":0.0}
-            for k in st.session_state.kpis if bool(k.get("linked_payment"))
-        ]
-        rows = sorted(src, key=lambda d: (d.get("output_id"), d.get("anticipated_date") or _date(2100,1,1), d.get("deliverable") or ""))
-        for d in rows:
-            wsd.append([d.get("kpi_id") or "", d.get("anticipated_date") or None, d.get("deliverable") or "", float(d.get("amount_usd") or 0.0)])
-        for r in wsd.iter_rows(min_row=2):
-            r[1].number_format = 'DD/mmm/YYYY'
-            r[3].number_format = '#,##0.00'
-
-        # --- Sheet 8: Risk Assessment (Excel) ---
-        import pandas as _pd
-        risk_df = st.session_state.get("risk_df")
-        if risk_df is None:
-            risk_df = _pd.DataFrame()
-
-        want = ["Risk", "Probability", "Impact", "Mitigation", "Owner"]
-        rdf = (risk_df.rename(columns=lambda c: str(c).strip())
-               .reindex(columns=want, fill_value="")
-               .fillna("")
-               .copy())
-
-        def _strip_emoji(v: str) -> str:
-            s = str(v or "").strip()
-            return (s.replace("🟢", "").replace("🟡", "").replace("🔴", "")).strip()
-
-        rdf["Probability"] = rdf["Probability"].map(_strip_emoji).str.title()
-        rdf["Impact"]      = rdf["Impact"].map(_strip_emoji).str.title()
-
-        ws_risk = wb.create_sheet("Risk Assessment")
-        ws_risk.append(want)
-        for _, r in rdf.iterrows():
-            if not any([r["Risk"], r["Mitigation"], r["Owner"]]):
-                continue
-            ws_risk.append([r["Risk"], r["Probability"], r["Impact"], r["Mitigation"], r["Owner"]])
-
-        # download
-        buf = BytesIO()
-        wb.save(buf)
-        buf.seek(0)
-        st.download_button(
-            "📥 Download Backup File (Excel)",
-            data=buf,
-            file_name="Application_Submission.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-    # --- Word export ---
     if st.button("Generate Project Design Document (Word)", key="btn_gen_word"):
         try:
             word_buf = render_pdd()
@@ -3894,11 +4067,45 @@ def render_export():
                 data=word_buf,
                 file_name=f"PDD_{safe}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="dl_word"
             )
         except ModuleNotFoundError:
             st.error("`python-docx` is required. Install it with: pip install python-docx")
         except Exception as e:
             st.error(f"Could not generate the Word Document: {e}")
+
+    # ========= Submission ZIP =========
+    st.markdown("""
+    <div style="background:#fafafa;padding:18px 22px;border-radius:10px;
+                margin:28px 0 10px;border:1px solid #eee;">
+      <h3 style="margin-top:0;">🔐 Submission Package (Password-Protected ZIP)</h3>
+      <p style="margin-top:-10px;color:#444;">
+    <strong>When your application is ready, create a password-protected ZIP file.</strong><br>
+    This file includes all your submission materials — <strong>the Word document, Excel backup, and a digital signature</strong> 
+    that helps us confirm everything is complete.<br>
+    Once ready, simply <strong>email the ZIP file to GLIDE</strong> as your official submission.
+  </p>
+
+  <p style="margin-top:10px;color:#555;font-style:italic;">
+    The ZIP file is securely encrypted to protect your information. 
+    You won’t need to open it yourself — GLIDE will take care of verifying it once received.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.button("Generate Submission ZIP", key="btn_zip_submit"):
+        try:
+            submission_id, zip_bytes = build_password_protected_bundle(include_excel=True)
+            st.success(f"Submission package ready. Submission ID: **{submission_id}**")
+            st.download_button(
+                "📦 Download Password-Protected ZIP",
+                data=zip_bytes,
+                file_name=f"submission_{submission_id}.zip",
+                mime="application/zip",
+                key="dl_zip"
+            )
+        except Exception as e:
+            st.error(f"Could not build submission ZIP: {e}")
 
 # ---- Tab registration ----
 reg = TabRegistry()
