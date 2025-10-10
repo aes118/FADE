@@ -51,3 +51,5 @@ node_modules/
 # Ignore entire app and tests folders
 /app/
 /tests/
+
+.streamlit/secrets.toml

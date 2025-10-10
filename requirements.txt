@@ -18,3 +18,4 @@ Pillow>=10.0.0
 
 # Networking & API calls
 requests>=2.31
+pyzipper>=0.3
